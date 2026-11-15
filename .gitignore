@@ -1,0 +1,14 @@
+# cosign: never commit wallet keys, secrets or local run output
+logs/
+*keypair*
+*.keypair.json
+id.json
+.cosign/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.egg-info/
+cosign-report.html
+results.json
+site/
