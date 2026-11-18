@@ -32,6 +32,7 @@ DEVNET_GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
 DEVNET_USDC = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"   # Circle's devnet USDC mint
 USDC_DECIMALS = 6
 TREASURY = "treasury"
+VAULT_PREFIX = "vault:"        # keystore name of an agent's multisig account: "vault:<agent>"
 DEFAULT_KEYPAIRS = Path("~/.config/cosign/devnet-keypairs.json")
 
 Rpc = Callable[[str, list], Any]
@@ -211,6 +212,8 @@ class SolanaLedger:
         """Move USDC from every cosign wallet back to the treasury. Returns the amount swept."""
         total = 0.0
         for n in self.keys.names():
+            if n.startswith(VAULT_PREFIX):
+                continue   # multisig vaults need both signers; their key can't move funds
             if n != TREASURY and (b := self.balance(n)) > 0:
                 self._send(n, TREASURY, b, "cosign sweep")
                 total += b
@@ -263,6 +266,72 @@ class SolanaLedger:
         self.transfers.append(t)
         return t
 
+    # --- 2-of-2 vault: SPL Token multisig (agent + cosigner) ---------------------
+    # The vault is a USDC token account owned by an SPL multisig with m=2 over the agent key and
+    # a cosigner key. Every outflow needs both signatures, so the cosigner (cosign guard) can veto
+    # any transfer but can never move money alone.
+    @staticmethod
+    def multisig_name(agent: str) -> str:
+        return VAULT_PREFIX + agent
+
+    def create_multisig_vault(self, agent: str, cosigner: str) -> dict:
+        """Create (or confirm) the agent's multisig and its USDC token account. The fee payer
+        pays rent. Idempotent: an existing vault is checked, not recreated."""
+        from solders.system_program import CreateAccountParams, create_account
+        from spl.token.constants import MULTISIG_LEN, TOKEN_PROGRAM_ID
+        from spl.token.instructions import create_idempotent_associated_token_account, initialize_multisig
+        from spl.token.models import InitializeMultisigParams
+        from solders.pubkey import Pubkey
+
+        if agent == cosigner:
+            raise ValueError("agent and cosigner must be different keys")
+        name = self.multisig_name(agent)
+        multisig = self.keys.keypair(name).pubkey()
+        want = sorted([str(self.pubkey(agent)), str(self.pubkey(cosigner))])
+        existing = self.multisig_vault(agent)
+        if existing is not None:
+            if existing["m"] != 2 or sorted(existing["signers"]) != want:
+                raise RuntimeError(f"{multisig} already exists with other signers; refusing to reuse it")
+            if existing["token_account_exists"]:
+                return existing | {"created": False}
+            ixs = []
+        else:
+            rent = self.rpc("getMinimumBalanceForRentExemption", [MULTISIG_LEN])
+            ixs = [create_account(CreateAccountParams(from_pubkey=self.pubkey(self.fee_payer), to_pubkey=multisig,
+                                                      lamports=rent, space=MULTISIG_LEN, owner=TOKEN_PROGRAM_ID)),
+                   initialize_multisig(InitializeMultisigParams(
+                       program_id=TOKEN_PROGRAM_ID, multisig=multisig, m=2,
+                       signers=[self.pubkey(agent), self.pubkey(cosigner)]))]
+        ixs.append(create_idempotent_associated_token_account(self.pubkey(self.fee_payer), multisig,
+                                                              Pubkey.from_string(self.mint)))
+        sig = self._submit(ixs, [name] if existing is None else [])
+        return (self.multisig_vault(agent) or {}) | {"created": True, "signature": sig}
+
+    def multisig_vault(self, agent: str) -> dict | None:
+        """{'multisig', 'token_account', 'm', 'signers', 'balance', 'token_account_exists'} or None."""
+        name = self.multisig_name(agent)
+        if name not in self.keys.names():
+            return None
+        multisig = str(self.keys.keypair(name).pubkey())
+        res = self.rpc("getAccountInfo", [multisig, {"encoding": "jsonParsed", "commitment": "confirmed"}])
+        if not res or not res.get("value"):
+            return None
+        info = res["value"]["data"]["parsed"]["info"]
+        acct = str(self.token_account(name))
+        tok = self.rpc("getAccountInfo", [acct, {"encoding": "jsonParsed", "commitment": "confirmed"}])
+        exists = bool(tok and tok.get("value"))
+        bal = float(tok["value"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmountString"]) if exists else 0.0
+        return {"multisig": multisig, "token_account": acct, "m": info["numRequiredSigners"],
+                "signers": list(info["signers"][: info["numValidSigners"]]), "balance": bal,
+                "token_account_exists": exists}
+
+    def fund_vault(self, agent: str, usdc: float) -> float:
+        """Top the agent's vault up to `usdc` from the treasury. Returns the new balance."""
+        if self.multisig_vault(agent) is None:
+            raise RuntimeError(f"no vault for {agent}: run `cosign vault create` first")
+        self.fund(self.multisig_name(agent), usdc)
+        return self.balance(self.multisig_name(agent))
+
     # --- transactions ---
     def _send(self, sender: str, recipient: str, amount: float, memo: str) -> str:
         if amount <= 0:
@@ -273,7 +342,8 @@ class SolanaLedger:
         return self._submit(self._transfer_ixs(sender, recipient, amount, memo), [sender])
 
     def _transfer_ixs(self, authority: str, recipient: str, amount: float, memo: str,
-                      source_owner: str | None = None) -> list:
+                      source_owner: str | None = None, signers: list[str] | None = None) -> list:
+        """`signers`: when `authority` is a multisig, the member keys that will sign (memo signer = first)."""
         from solders.pubkey import Pubkey
         from spl.memo.constants import MEMO_PROGRAM_ID
         from spl.memo.instructions import create_memo
@@ -291,10 +361,12 @@ class SolanaLedger:
             transfer_checked(TransferCheckedParams(
                 program_id=TOKEN_PROGRAM_ID, source=self.token_account(source_owner or authority), mint=mint,
                 dest=self.token_account(recipient), owner=auth, amount=round(amount * 10 ** USDC_DECIMALS),
-                decimals=USDC_DECIMALS)),
+                decimals=USDC_DECIMALS, signers=[self.pubkey(n) for n in signers or []])),
         ]
         if memo:
-            ixs.append(create_memo(MemoParams(program_id=MEMO_PROGRAM_ID, signer=auth, message=memo.encode()[:500])))
+            memo_signer = self.pubkey(signers[0]) if signers else auth
+            ixs.append(create_memo(MemoParams(program_id=MEMO_PROGRAM_ID, signer=memo_signer,
+                                              message=memo.encode()[:500])))
         return ixs
 
     def _submit(self, ixs: list, signer_names: list[str]) -> str:

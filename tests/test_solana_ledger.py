@@ -16,6 +16,7 @@ pytest.importorskip("solders")
 pytest.importorskip("spl")
 
 from solders.hash import Hash  # noqa: E402
+from solders.pubkey import Pubkey  # noqa: E402
 from solders.transaction import Transaction  # noqa: E402
 from spl.memo.constants import MEMO_PROGRAM_ID  # noqa: E402
 from spl.token.constants import ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID  # noqa: E402
@@ -30,6 +31,7 @@ from cosign.solana_ledger import (DEVNET_GENESIS, DEVNET_USDC, TREASURY, KeyStor
 from cosign.watch import watch  # noqa: E402
 
 U = 10 ** 6
+SYSTEM_PROGRAM = "11111111111111111111111111111111"
 
 
 class FakeDevnet:
@@ -40,6 +42,8 @@ class FakeDevnet:
         self.lamports: dict[str, int] = {}
         self.txs: dict[str, dict] = {}        # signature -> jsonParsed tx
         self.delegate: dict[str, tuple[str, int]] = {}   # token account -> (delegate, units left)
+        self.multisig: dict[str, tuple[int, list[str]]] = {}   # multisig account -> (m, signers)
+        self.created: dict[str, tuple[int, str]] = {}         # system-created account -> (space, program owner)
         self.sent = 0
 
     def mint_to(self, ledger, name, usdc):
@@ -64,7 +68,15 @@ class FakeDevnet:
         return {"value": [{"account": {"data": {"parsed": {"info": {"tokenAmount": {
             "uiAmountString": str(units / U)}}}}}} for a, units in self.tokens.items() if self.owner.get(a) == owner]}
 
+    def getMinimumBalanceForRentExemption(self, space):
+        return 6960 * (128 + space)
+
     def getAccountInfo(self, acct, _opts):
+        if acct in self.multisig:
+            m, signers = self.multisig[acct]
+            return {"value": {"data": {"parsed": {"type": "multisig", "info": {
+                "isInitialized": True, "numRequiredSigners": m, "numValidSigners": len(signers),
+                "signers": signers}}}}}
         if acct not in self.tokens:
             return {"value": None}
         info = {"owner": self.owner[acct], "mint": DEVNET_USDC,
@@ -87,11 +99,11 @@ class FakeDevnet:
     def sendTransaction(self, b64, _opts):
         tx = Transaction.from_bytes(base64.b64decode(b64))
         tx.verify()
-        snapshot = (dict(self.tokens), dict(self.owner), dict(self.delegate))
+        snapshot = (dict(self.tokens), dict(self.owner), dict(self.delegate), dict(self.multisig), dict(self.created))
         try:
             return self._apply(tx)
         except RpcError:          # preflight failure: nothing lands
-            self.tokens, self.owner, self.delegate = snapshot
+            self.tokens, self.owner, self.delegate, self.multisig, self.created = snapshot
             raise
 
     def _apply(self, tx):                                       # every required signature is valid
@@ -102,7 +114,14 @@ class FakeDevnet:
             prog = keys[ix.program_id_index]
             acc = [keys[i] for i in ix.accounts]
             data = bytes(ix.data)
-            if prog == str(ASSOCIATED_TOKEN_PROGRAM_ID):
+            if prog == SYSTEM_PROGRAM:
+                assert int.from_bytes(data[:4], "little") == 0, "expected CreateAccount"
+                assert msg.is_signer(ix.accounts[0]) and msg.is_signer(ix.accounts[1])
+                if acc[1] in self.created:
+                    raise RpcError("account already in use")
+                space = int.from_bytes(data[12:20], "little")
+                self.created[acc[1]] = (space, str(Pubkey.from_bytes(data[20:52])))
+            elif prog == str(ASSOCIATED_TOKEN_PROGRAM_ID):
                 self.owner.setdefault(acc[1], acc[2])
                 self.tokens.setdefault(acc[1], 0)
             elif prog == str(TOKEN_PROGRAM_ID):
@@ -117,9 +136,21 @@ class FakeDevnet:
                     assert signer(1) and self.owner[src] == owner
                     self.delegate.pop(src, None)
                     continue
+                if data[0] == 2:                                        # InitializeMultisig
+                    ms, _rent, *signers = acc
+                    assert self.created.get(ms) == (355, str(TOKEN_PROGRAM_ID)) and ms not in self.multisig
+                    self.multisig[ms] = (data[1], signers)
+                    continue
                 assert data[0] == 12, "expected TransferChecked"
-                src, mint, dst, auth = acc
-                assert signer(3) and mint == DEVNET_USDC and data[9] == 6
+                src, mint, dst, auth = acc[:4]
+                assert mint == DEVNET_USDC and data[9] == 6
+                if auth in self.multisig:                               # m of the multisig's signers must sign
+                    m, allowed = self.multisig[auth]
+                    signed = {acc[i] for i in range(4, len(acc)) if signer(i) and acc[i] in allowed}
+                    if len(signed) < m:
+                        raise RpcError("custom program error: 0x8 (not enough multisig signers)")
+                else:
+                    assert signer(3)
                 units = int.from_bytes(data[1:9], "little")
                 if self.owner[src] != auth:                             # spending as a delegate
                     d, left = self.delegate.get(src, (None, 0))
@@ -369,3 +400,63 @@ def test_cli_grant_approves_then_revokes(vault, tmp_path, monkeypatch, capsys):
 
     with pytest.raises(SystemExit, match="out of range"):
         cli.main(["grant", "--results", str(results), "--run", "3"])
+
+
+# --- 2-of-2 multisig vault ------------------------------------------------------------
+@pytest.fixture
+def msvault(devnet):
+    net, ledger = devnet
+    ledger.fee_payer = TREASURY
+    v = ledger.create_multisig_vault("agent_wallet", "cosigner")
+    return net, ledger, v
+
+
+def test_vault_create_makes_a_2_of_2_multisig_owning_a_usdc_account(msvault):
+    net, ledger, v = msvault
+    assert v["created"] and v["m"] == 2
+    assert sorted(v["signers"]) == sorted([str(ledger.pubkey("agent_wallet")), str(ledger.pubkey("cosigner"))])
+    assert net.owner[v["token_account"]] == v["multisig"] and v["balance"] == 0
+    again = ledger.create_multisig_vault("agent_wallet", "cosigner")
+    assert not again["created"] and again["multisig"] == v["multisig"]
+    with pytest.raises(RuntimeError, match="other signers"):
+        ledger.create_multisig_vault("agent_wallet", "someone_else")
+    with pytest.raises(ValueError):
+        ledger.create_multisig_vault("x", "x")
+
+
+def test_vault_fund_tops_up_and_sweep_leaves_it(msvault):
+    net, ledger, v = msvault
+    assert ledger.fund_vault("agent_wallet", 12) == 12
+    assert ledger.fund_vault("agent_wallet", 12) == 12            # already topped up
+    assert ledger.sweep() == 0 and ledger.multisig_vault("agent_wallet")["balance"] == 12
+    with pytest.raises(RuntimeError, match="vault create"):
+        ledger.fund_vault("nobody", 1)
+
+
+def test_vault_needs_both_signatures_on_chain(msvault):
+    net, ledger, v = msvault
+    ledger.fund_vault("agent_wallet", 10)
+    ledger.fee_payer = "agent_wallet"
+    net.lamports[str(ledger.pubkey("agent_wallet"))] = 10 ** 9
+    name = ledger.multisig_name("agent_wallet")
+    ixs = ledger._transfer_ixs(name, "dex_pool", 1, "", signers=["agent_wallet"])
+    with pytest.raises(RpcError, match="not enough multisig signers"):    # agent alone
+        ledger._submit(ixs, ["agent_wallet"])
+    ixs = ledger._transfer_ixs(name, "dex_pool", 1, "", signers=["agent_wallet", "cosigner"])
+    ledger._submit(ixs, ["agent_wallet", "cosigner"])
+    assert ledger.balance(name) == 9 and ledger.balance("dex_pool") == 1
+
+
+def test_cli_vault_create_and_fund_print_addresses_not_keys(devnet, monkeypatch, capsys):
+    net, ledger = devnet
+    monkeypatch.setattr("cosign.solana_ledger.SolanaLedger.from_env", classmethod(lambda cls: ledger))
+    assert cli.main(["vault", "create", "--agent", "agent_wallet", "--cosigner", "cosigner"]) == 0
+    out = capsys.readouterr().out
+    v = ledger.multisig_vault("agent_wallet")
+    assert v["multisig"] in out and v["token_account"] in out and str(ledger.pubkey("cosigner")) in out
+    assert cli.main(["vault", "fund", "--agent", "agent_wallet", "--usdc", "7"]) == 0
+    assert "holds 7 USDC" in capsys.readouterr().out
+    from solders.keypair import Keypair
+    secrets = json.loads(ledger.keys.path.read_text())
+    printed = out + capsys.readouterr().out
+    assert not any(str(Keypair.from_bytes(bytes(k))) in printed or str(k) in printed for k in secrets.values())

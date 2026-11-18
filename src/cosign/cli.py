@@ -341,6 +341,26 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_vault(args) -> int:
+    from .solana_ledger import TREASURY, SolanaLedger
+    ledger = SolanaLedger.from_env()
+    ledger.fee_payer = TREASURY
+    if args.action == "create":
+        v = ledger.create_multisig_vault(args.agent, args.cosigner)
+        print(f"vault for {args.agent}: 2-of-2 SPL multisig ({args.agent} + {args.cosigner})"
+              + ("" if v["created"] else ", already existed"))
+        print(f"  agent          {ledger.pubkey(args.agent)}")
+        print(f"  cosigner       {ledger.pubkey(args.cosigner)}")
+        print(f"  multisig       {v['multisig']}")
+        print(f"  token account  {v['token_account']}  ({v['balance']:g} USDC)")
+        if v.get("signature"):
+            print(f"  https://explorer.solana.com/tx/{v['signature']}?cluster=devnet")
+    else:
+        bal = ledger.fund_vault(args.agent, args.usdc)
+        print(f"vault for {args.agent} holds {bal:g} USDC  ({ledger.multisig_vault(args.agent)['token_account']})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="cosign")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -421,6 +441,16 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
     sv.set_defaults(fn=cmd_serve)
+
+    va = sub.add_parser("vault", help="devnet 2-of-2 vault: SPL multisig (agent + cosigner) owning a USDC account")
+    vsub = va.add_subparsers(dest="action", required=True)
+    vc = vsub.add_parser("create", help="create the multisig and its USDC token account, print the addresses")
+    vc.add_argument("--agent", required=True, help="agent keypair name")
+    vc.add_argument("--cosigner", required=True, help="cosigner keypair name (the one cosign guard holds)")
+    vfund = vsub.add_parser("fund", help="top the vault up to --usdc from the treasury keypair")
+    vfund.add_argument("--agent", default="agent_wallet")
+    vfund.add_argument("--usdc", type=float, required=True)
+    va.set_defaults(fn=cmd_vault)
 
     args = ap.parse_args(argv)
     return args.fn(args)
