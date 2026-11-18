@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cosign leaderboard: which AI models are safe with money</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="cosign.css">
 <style>
-  .top{padding:64px 0 28px;display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap}
-  .top h1{font-size:clamp(32px,4vw,46px);letter-spacing:-.03em;line-height:1.05;margin:0 0 12px;font-weight:600;max-width:18ch}
+  .top{padding:72px 0 32px;display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap}
+  .top h1{font-family:var(--display);font-stretch:112%;font-size:clamp(36px,5vw,64px);letter-spacing:-.045em;line-height:.98;margin:0 0 16px;font-weight:700;max-width:14ch}
   .top p{color:var(--muted);max-width:56ch;margin:0;font-size:16px}
   .meta{font-family:var(--mono);font-size:12px;color:var(--muted);text-align:right;line-height:1.8}
   .board{overflow-x:auto}
@@ -19,7 +19,7 @@
   table.lb td{padding:16px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
   table.lb tr:last-child td{border-bottom:0}
   table.lb .rank{font-family:var(--mono);color:var(--faint);width:36px}
-  table.lb .model{font-family:var(--mono);font-size:13.5px}
+  table.lb .model{font-family:var(--display);font-stretch:106%;font-weight:600;font-size:15px;letter-spacing:-.015em}
   table.lb .model small{display:block;font-family:var(--sans);color:var(--muted);font-size:12px;margin-top:2px}
   table.lb td.n{font-family:var(--mono);font-variant-numeric:tabular-nums}
   table.lb .red{color:var(--red)}
@@ -37,7 +37,7 @@
 
   .method{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:56px}
   .method .panel{padding:20px}
-  .method h3{color:var(--text);font-size:15px;margin-bottom:8px}
+  .method h3{color:var(--text);font-family:var(--display);font-stretch:108%;font-weight:700;font-size:18px;letter-spacing:-.02em;margin-bottom:8px}
   .method p{margin:0;color:var(--muted);font-size:14px}
   .notes{margin-top:16px;color:var(--muted);font-size:13px;max-width:80ch}
   .load{display:flex;gap:8px;align-items:center}
@@ -48,12 +48,12 @@
 </style>
 </head>
 <body>
-<nav class="nav">
-  <a class="wordmark" href="index.html">cosign<span class="cur" aria-hidden="true"></span></a>
+<nav class="nav"><div class="in">
+  <a class="wordmark" href="index.html"><svg class="mark" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="9.1" fill="#F4C430" stroke="#1B201D" stroke-width="1.6"/><path d="M10 10V.9A9.1 9.1 0 0 1 19.1 10ZM10 10v9.1A9.1 9.1 0 0 1 .9 10Z" fill="#1B201D"/></svg>cosign</a>
   <div class="links"><a href="index.html#how">How it works</a><a href="leaderboard.html" aria-current="page">Leaderboard</a><a href="app.html">App</a></div>
   <div class="sp"></div>
   <div class="load"><label class="file">Add results<input type="file" id="inRes" accept=".json" multiple></label></div>
-</nav>
+</div></nav>
 
 <main class="wrap">
   <div class="top">
@@ -89,7 +89,7 @@
 <script id="results" type="application/json">/*__RESULTS__*/</script>
 <script>
 (() => {
-  const FAM = ["poisoned_website","fake_paid_api","fake_token_page","hijacked_tool","memory_poisoning","agent_relay","permission_escalation","approval_drain","address_poisoning"];
+  const FAM = ["poisoned_website","fake_paid_api","fake_token_page","hijacked_tool","memory_poisoning"];
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   const pct = x => Math.round((x || 0) * 100) + "%";
@@ -112,7 +112,7 @@
     const by = {};
     rows.filter(r => r.agent !== "naive").forEach(r => { (by[r.agent] ||= {})[presetOf(r)] = r; });
     const models = Object.entries(by).filter(([, v]) => v.none).sort((a, b) => b[1].none.score - a[1].none.score || (b[1].recommended?.score ?? 0) - (a[1].recommended?.score ?? 0));
-    const fams = r => `<div class="fam">${FAM.map(f => `<span class="cell ${!r.by_family?.[f] ? "" : r.by_family[f][0] ? "breach" : "held"}" title="${f.replace(/_/g, " ")}${r.by_family?.[f] ? "" : " (not tested)"}"></span>`).join("")}</div>`;
+    const fams = r => `<div class="fam">${FAM.map(f => `<span class="cell ${(r.by_family?.[f]?.[0] ? "breach" : "held")}" title="${f.replace(/_/g, " ")}"></span>`).join("")}</div>`;
     $("lb").innerHTML = `<tr><th></th><th>Model</th><th class="n">Score, no fixes</th><th>Attacks that worked</th><th class="n">Attacks landed</th><th class="n">Wallet lost</th><th class="n">Score with Cosign fixes</th><th class="n">Tasks done with fixes</th></tr>` +
       models.map(([a, v], i) => { const n = v.none, f = v.recommended, [name, org] = NICE[a] || [a.split(":").pop(), ""];
         return `<tr><td class="rank">${i + 1}</td><td class="model">${esc(name)}<small>${esc(org)}</small></td>
