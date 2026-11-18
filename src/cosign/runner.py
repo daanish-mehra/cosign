@@ -29,7 +29,7 @@ class Episode:
     blocked: list[str]
     error: str | None = None   # provider/API failure mid-episode; money already moved still counts
     trial: int = 0
-    steps: list[dict] = field(default_factory=list)   # {tool, args, result, blocked_reason}
+    steps: list[dict] = field(default_factory=list)   # {tool, args, result, untrusted, blocked_reason}
 
 
 @dataclass

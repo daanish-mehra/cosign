@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .ledger import InsufficientFunds, Transfer
+from .ledger import InsufficientFunds, Refused, Transfer
 
 DEVNET_RPC = "https://api.devnet.solana.com"
 DEVNET_GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
@@ -40,6 +40,16 @@ Rpc = Callable[[str, list], Any]
 
 class RpcError(Exception):
     pass
+
+
+def http_guard(url: str, timeout: float = 60) -> Callable[[dict], dict]:
+    """POST cosign requests to a running `cosign guard serve` (url like http://127.0.0.1:8100)."""
+    def call(req: dict) -> dict:
+        body = json.dumps(req).encode()
+        r = urllib.request.Request(url.rstrip("/") + "/v1/cosign", body, {"Content-Type": "application/json"})
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            return json.load(resp)
+    return call
 
 
 def http_rpc(url: str, timeout: float = 30) -> Rpc:
@@ -132,6 +142,13 @@ class SolanaLedger:
     poll: float = 1.0
     transfers: list[Transfer] = field(default_factory=list)   # this session's transfers, like SimLedger
     sent_messages: set[bytes] = field(default_factory=set, repr=False)  # share across sessions to catch repeats
+    # guarded mode (use_vault): agent name -> (multisig name, cosigner name), the guard, and its run id
+    vaults: dict[str, tuple[str, str]] = field(default_factory=dict)
+    guard: Callable[[dict], dict] | None = field(default=None, repr=False)
+    run_id: str | None = None
+    refusals: list[dict] = field(default_factory=list)   # {sender, recipient, amount, reason}
+    context_calls: int = 20                               # last N tool calls sent with each request
+    _agent: Any = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> "SolanaLedger":
@@ -169,13 +186,18 @@ class SolanaLedger:
 
     # --- Ledger interface ---
     def balance(self, address: str) -> float:
+        if address in self.vaults:            # guarded mode: the agent's money is its vault
+            address = self.vaults[address][0]
         res = self.rpc("getTokenAccountsByOwner", [str(self.pubkey(address)), {"mint": self.mint},
                                                    {"encoding": "jsonParsed", "commitment": "confirmed"}])
         return sum(float(a["account"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmountString"])
                    for a in res["value"])
 
     def transfer(self, sender: str, recipient: str, amount: float, memo: str = "") -> Transfer:
-        sig = self._send(sender, recipient, amount, memo)
+        if sender in self.vaults and self.guard is not None:
+            sig = self._send_guarded(sender, recipient, amount, memo)
+        else:
+            sig = self._send(sender, recipient, amount, memo)
         t = Transfer(sender, recipient, amount, memo, sig)
         self.transfers.append(t)
         return t
@@ -197,6 +219,8 @@ class SolanaLedger:
     # --- devnet housekeeping ---
     def fund(self, address: str, amount: float) -> None:
         """Top `address` up to `amount` USDC from the treasury (not recorded as an agent transfer)."""
+        if address in self.vaults:
+            address = self.vaults[address][0]
         short = amount - self.balance(address)
         if short <= 1e-9:
             return
@@ -332,6 +356,48 @@ class SolanaLedger:
         self.fund(self.multisig_name(agent), usdc)
         return self.balance(self.multisig_name(agent))
 
+    # --- guarded mode: vault transfers go to cosign guard for the second signature ---
+    def use_vault(self, agent: str, cosigner: str, guard: Callable[[dict], dict], run_id: str) -> None:
+        """From now on `agent`'s transfers come out of its 2-of-2 vault: built here, signed by the
+        agent, then sent to `guard` (a Cosigner.decide, or http_guard(url)) which cosigns and submits
+        or refuses. The agent pays the fee; the cosigner never does."""
+        if self.fee_payer == cosigner:
+            raise ValueError("the cosigner can't be the fee payer in guarded mode")
+        self.vaults[agent] = (self.multisig_name(agent), cosigner)
+        self.guard, self.run_id = guard, run_id
+
+    def bind_agent(self, agent) -> None:
+        """Called by Agent: its tool calls so far are the context sent with each cosign request."""
+        self._agent = agent
+
+    def episode_context(self) -> list[dict]:
+        steps = getattr(self._agent, "steps", None) or []
+        return [{"tool": s["tool"], "untrusted": bool(s.get("untrusted"))}
+                for s in steps[-self.context_calls:] if s.get("tool") != "final"]
+
+    def _send_guarded(self, sender: str, recipient: str, amount: float, memo: str) -> str:
+        from solders.transaction import Transaction
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        multisig, cosigner = self.vaults[sender]
+        have = self.balance(multisig)
+        if have + 1e-9 < amount:
+            raise InsufficientFunds(f"{sender}'s vault has {have}, tried {amount}")
+        ixs = self._transfer_ixs(multisig, recipient, amount, memo, signers=[sender, cosigner])
+        msg = self._message(ixs)
+        tx = Transaction.new_unsigned(msg)
+        own = {self.fee_payer, sender}
+        tx.partial_sign([self.keys.keypair(n) for n in sorted(own)], msg.recent_blockhash)
+        reply = self.guard({"tx": base64.b64encode(bytes(tx)).decode(), "run_id": self.run_id,
+                            "tool_calls": self.episode_context()})
+        decision, reason = reply.get("decision"), reply.get("reason", "")
+        if decision == "approve" and reply.get("signature"):
+            return reply["signature"]
+        if decision == "refuse":
+            self.refusals.append({"sender": sender, "recipient": recipient, "amount": amount, "reason": reason})
+            raise Refused(reason)
+        raise RpcError(f"cosign guard: {decision}: {reason}")
+
     # --- transactions ---
     def _send(self, sender: str, recipient: str, amount: float, memo: str) -> str:
         if amount <= 0:
@@ -370,8 +436,6 @@ class SolanaLedger:
         return ixs
 
     def _submit(self, ixs: list, signer_names: list[str]) -> str:
-        from solders.hash import Hash
-        from solders.message import Message
         from solders.transaction import Transaction
 
         for n in signer_names:
@@ -383,24 +447,32 @@ class SolanaLedger:
             kp = self.keys.keypair(n)
             if kp.pubkey() not in [k.pubkey() for k in signers]:
                 signers.append(kp)
-        # Identical instructions under the same blockhash make an identical transaction, which the
-        # cluster drops as a duplicate (e.g. the same purchase twice in a row). Wait for a new blockhash.
+        msg = self._message(ixs)
+        tx = Transaction(signers, msg, msg.recent_blockhash)
+        sig = self.rpc("sendTransaction", [base64.b64encode(bytes(tx)).decode(),
+                                           {"encoding": "base64", "preflightCommitment": "confirmed"}])
+        self._confirm(sig)
+        return sig
+
+    def _message(self, ixs: list):
+        """A message under a fresh blockhash. Identical instructions under the same blockhash make an
+        identical transaction, which the cluster drops as a duplicate (e.g. the same purchase twice in
+        a row), so wait for a new blockhash if needed."""
+        from solders.hash import Hash
+        from solders.message import Message
+        payer = self.pubkey(self.fee_payer)
         deadline = time.monotonic() + self.confirm_timeout
         while True:
             blockhash = Hash.from_string(
                 self.rpc("getLatestBlockhash", [{"commitment": "confirmed"}])["value"]["blockhash"])
-            msg = Message.new_with_blockhash(ixs, payer.pubkey(), blockhash)
+            msg = Message.new_with_blockhash(ixs, payer, blockhash)
             if bytes(msg) not in self.sent_messages:
                 break
             if time.monotonic() > deadline:
                 raise RpcError("no fresh blockhash for a repeated transaction")
             time.sleep(max(self.poll, 0.4))
         self.sent_messages.add(bytes(msg))
-        tx = Transaction(signers, msg, blockhash)
-        sig = self.rpc("sendTransaction", [base64.b64encode(bytes(tx)).decode(),
-                                           {"encoding": "base64", "preflightCommitment": "confirmed"}])
-        self._confirm(sig)
-        return sig
+        return msg
 
     def _confirm(self, sig: str) -> None:
         deadline = time.monotonic() + self.confirm_timeout

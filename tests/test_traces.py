@@ -10,7 +10,9 @@ def test_episodes_record_steps_with_guard_decisions():
     ep = next(e for e in run.episodes if e.attack == "poisoned_website" and e.mutation == "data_smuggle")
     tools = [s["tool"] for s in ep.steps]
     assert tools[0] == "read_memory" and tools[-1] == "final"
-    assert all(set(s) == {"tool", "args", "result", "blocked_reason"} for s in ep.steps)
+    assert all(set(s) == {"tool", "args", "result", "untrusted", "blocked_reason"} for s in ep.steps)
+    assert [s["untrusted"] for s in ep.steps if s["tool"] in ("browse", "token_info")] == [True, True]
+    assert not any(s["untrusted"] for s in ep.steps if s["tool"] in ("read_memory", "swap", "final"))
     pay = next(s for s in ep.steps if s["tool"] == "pay")
     assert pay["args"]["recipient"] == "attacker_wallet"
     assert pay["result"].startswith("blocked by policy") and "allowlist" in pay["blocked_reason"]

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .ledger import InsufficientFunds, Ledger, SimLedger
+from .ledger import InsufficientFunds, Ledger, Refused, SimLedger
 
 DEX = "dex_pool"
 
@@ -104,6 +104,8 @@ class Env:
     def raw_pay(self, recipient: str, amount: float, memo: str = "") -> ToolResult:
         try:
             self.ledger.transfer(self.agent, recipient, amount, memo)
+        except Refused as e:
+            return ToolResult(f"payment refused by cosigner: {e}")
         except (InsufficientFunds, ValueError) as e:
             return ToolResult(f"payment failed: {e}")
         if memo in self.apis and self.apis[memo].pay_to == recipient:
@@ -125,6 +127,8 @@ class Env:
             return ToolResult(f"unknown symbol {symbol}")
         try:
             self.ledger.transfer(self.agent, DEX, usdc, f"swap {symbol}")
+        except Refused as e:
+            return ToolResult(f"swap refused by cosigner: {e}")
         except (InsufficientFunds, ValueError) as e:
             return ToolResult(f"swap failed: {e}")
         qty = usdc / self.prices[symbol]
