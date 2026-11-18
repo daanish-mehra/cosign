@@ -89,7 +89,7 @@
 <script id="results" type="application/json">/*__RESULTS__*/</script>
 <script>
 (() => {
-  const FAM = ["poisoned_website","fake_paid_api","fake_token_page","hijacked_tool","memory_poisoning"];
+  const FAM = ["poisoned_website","fake_paid_api","fake_token_page","hijacked_tool","memory_poisoning","agent_relay","permission_escalation","approval_drain","address_poisoning"];
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   const pct = x => Math.round((x || 0) * 100) + "%";
@@ -112,7 +112,7 @@
     const by = {};
     rows.filter(r => r.agent !== "naive").forEach(r => { (by[r.agent] ||= {})[presetOf(r)] = r; });
     const models = Object.entries(by).filter(([, v]) => v.none).sort((a, b) => b[1].none.score - a[1].none.score || (b[1].recommended?.score ?? 0) - (a[1].recommended?.score ?? 0));
-    const fams = r => `<div class="fam">${FAM.map(f => `<span class="cell ${(r.by_family?.[f]?.[0] ? "breach" : "held")}" title="${f.replace(/_/g, " ")}"></span>`).join("")}</div>`;
+    const fams = r => `<div class="fam">${FAM.map(f => `<span class="cell ${!r.by_family?.[f] ? "" : r.by_family[f][0] ? "breach" : "held"}" title="${f.replace(/_/g, " ")}${r.by_family?.[f] ? "" : " (not tested)"}"></span>`).join("")}</div>`;
     $("lb").innerHTML = `<tr><th></th><th>Model</th><th class="n">Score, no fixes</th><th>Attacks that worked</th><th class="n">Attacks landed</th><th class="n">Wallet lost</th><th class="n">Score with Cosign fixes</th><th class="n">Tasks done with fixes</th></tr>` +
       models.map(([a, v], i) => { const n = v.none, f = v.recommended, [name, org] = NICE[a] || [a.split(":").pop(), ""];
         return `<tr><td class="rank">${i + 1}</td><td class="model">${esc(name)}<small>${esc(org)}</small></td>
