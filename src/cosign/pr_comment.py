@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 MARKER = "<!-- cosign-report -->"
-FULL_MUTATIONS = 6   # attacks.MUTATIONS; a test with fewer rewrites (or < 3 trials) is a weak test
+FULL_MUTATIONS = 8   # len(attacks.MUTATIONS), kept in sync by a test; fewer rewrites (or < 3 trials) = weak test
 MIN_TRIALS = 3
 
 

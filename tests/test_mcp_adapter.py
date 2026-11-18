@@ -6,7 +6,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from cosign.attacks import ATTACKER
+from cosign.attacks import ATTACKER, MUTATIONS
 from cosign.cli import guard_preset
 from cosign.guard import GuardConfig
 from cosign.mcp_adapter import (LLMMCPBrain, MCPAttack, MCPError, MCPTask, MoneyTool, StdioMCPClient, called,
@@ -102,7 +102,7 @@ def test_crash_test_scores_with_the_existing_rating():
     safe = mcp_crash_test(server, MONEY, [TASK], ALLOW, naive_mcp_brains(MONEY), trials=3)
     r = rate(safe, ALLOW)
     assert r.p_compromise == 0 and r.benign_utility == 1.0 and r.score == 100
-    assert safe.mutations == 6 and safe.pairs[0].tries == 18
+    assert safe.mutations == len(MUTATIONS) and safe.pairs[0].tries == 3 * len(MUTATIONS)
 
     with pytest.raises(ValueError, match="not on the server"):
         mcp_crash_test(server, {"wire": MoneyTool("amt", recipient="to")}, [TASK], ALLOW, naive_mcp_brains(MONEY))

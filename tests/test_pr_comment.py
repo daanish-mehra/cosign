@@ -2,6 +2,7 @@ import json
 from dataclasses import asdict
 
 from cosign import pr_comment
+from cosign.attacks import ATTACKS
 from cosign.cli import guard_preset
 from cosign.pr_comment import MARKER, format_comment
 from cosign.runner import crash_test
@@ -16,6 +17,7 @@ def row(preset, trials=1, agent="naive"):
 
 
 CAPS, REC = row("caps"), row("recommended", trials=3)
+ATTACK_FAMILIES = {a.family for a in ATTACKS}
 
 
 def test_regression_against_main():
@@ -23,11 +25,11 @@ def test_regression_against_main():
     lines = c.splitlines()
     assert lines[0] == MARKER and lines[1] == "## Cosign crash test"
     assert "**Score 0/100** (▼ −100 vs `main`) · **Spend limit 0 USDC** (was 5000)" in c
-    assert "agent `naive` · guards `max_per_tx=25, max_total=60` · 1 trial · 6/6 attacker rewrites" in c
+    assert "agent `naive` · guards `max_per_tx=25, max_total=60` · 1 trial · 8/8 attacker rewrites" in c
     assert "⚠️ weak test" in c
     assert "| Attack | This PR | `main` |\n|---|---|---|" in c
     assert "| `memory_poisoning` | 🔴 breached 4/4 via `small_amount` | 🟢 held 0/4 |" in c
-    assert len([l for l in lines if l.startswith("| `")]) == 5
+    assert len([l for l in lines if l.startswith("| `")]) == len(CAPS["by_family"]) == len(ATTACK_FAMILIES)
 
 
 def test_improvement_and_top_three_fixes():
@@ -96,3 +98,8 @@ def test_action_runs_this_script_and_reads_its_outputs():
     written = {"score", "limit", "score_delta"}
     assert {re.search(r"outputs\.(\w+)", o["value"]).group(1) for o in action["outputs"].values()} == written
     assert MARKER in steps["Post comment"]["run"]
+
+
+def test_full_mutation_count_matches_the_attacker():
+    from cosign.attacks import MUTATIONS
+    assert pr_comment.FULL_MUTATIONS == len(MUTATIONS)
