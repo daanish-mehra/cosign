@@ -2,6 +2,9 @@
 
 cosign test   --agent naive|llm [--provider anthropic|openai] [--model M] --guards PRESET [--ledger sim|devnet]
 cosign matrix --models naive,anthropic:MODEL,openai:MODEL,adapter:elizaos --guards none,caps,quarantine,recommended
+cosign attest --results R --run N          cosign verify FILE [--pubkey K]
+cosign policy --results R --run N [--format json|privy|turnkey]
+cosign serve  [--runs-dir runs]
 """
 
 from __future__ import annotations
@@ -100,8 +103,28 @@ def cmd_test(args) -> int:
     return 0
 
 
+def trace_lines(run_index: int, run) -> list[dict]:
+    """One record per episode (benign first, then attacked), for runs/<ts>/traces.jsonl."""
+    return [{"run": run_index, "task": e.task, "attack": e.attack, "mutation": e.mutation, "trial": e.trial,
+             "stolen": e.stolen, "task_ok": e.task_ok, "error": e.error, "steps": e.steps}
+            for e in run.benign + run.episodes]
+
+
+def new_run_dir(root: str) -> "Path":
+    from datetime import datetime, timezone
+    from pathlib import Path
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    d, n = Path(root) / stamp, 1
+    while d.exists():  # two matrices in the same second
+        d, n = Path(root) / f"{stamp}-{n}", n + 1
+    d.mkdir(parents=True)
+    return d
+
+
 def cmd_matrix(args) -> int:
     rows, results = [], []
+    run_dir = new_run_dir(args.runs_dir)
+    (run_dir / "traces.jsonl").touch()
     for spec in [s.strip() for s in args.models.split(",") if s.strip()]:
         try:
             brains = brain_factory(spec)
@@ -126,8 +149,13 @@ def cmd_matrix(args) -> int:
                 print(f"warn {spec} / {g}: {errs}/{total} episodes hit API errors; "
                       f"first: {next(e.error for e in run.benign + run.episodes if e.error)}", file=sys.stderr)
             rows.append((spec, g, r))
-            results.append({"agent": spec, "guards": run.guard, "trials": args.trials, "mutations": run.mutations,
-                            "episodes": len(run.episodes) + len(run.benign), **asdict(r)})
+            results.append({"agent": spec, "guards": run.guard, "preset": g, "trials": args.trials,
+                            "mutations": run.mutations, "episodes": len(run.episodes) + len(run.benign),
+                            **asdict(r)})
+            with open(run_dir / "traces.jsonl", "a") as f:   # written as each run finishes
+                for line in trace_lines(len(results) - 1, run):
+                    f.write(json.dumps(line) + "\n")
+            (run_dir / "results.json").write_text(json.dumps(results, indent=2))
             print(f"done {spec:<32} {g:<12} score={r.score:<3} limit={r.limit}", file=sys.stderr)
 
     print(f"\n{'agent':<32} {'guards':<12} {'score':>5} {'limit':>6} {'P':>5} {'loss':>5} {'util':>5}")
@@ -135,10 +163,12 @@ def cmd_matrix(args) -> int:
     for spec, g, r in rows:
         print(f"{spec:<32} {g:<12} {r.score:>5} {r.limit:>6} {r.p_compromise:>5.0%} "
               f"{r.lgd:>5.0%} {r.benign_utility:>5.0%}")
+    (run_dir / "results.json").write_text(json.dumps(results, indent=2))
+    print(f"\nsaved {run_dir}/results.json and traces.jsonl")
     if args.out:
         with open(args.out, "w") as f:
             json.dump(results, f, indent=2)
-        print(f"\nsaved {args.out}")
+        print(f"saved {args.out}")
     return 0
 
 
@@ -196,11 +226,7 @@ def cmd_grant(args) -> int:
     from .grant import apply, effective_limit, scaled_tiers, to_usdc
     from .solana_ledger import SolanaLedger
 
-    rows = json.loads(Path(args.results).read_text())
-    rows = rows if isinstance(rows, list) else [rows]
-    if not 0 <= args.run < len(rows):
-        raise SystemExit(f"--run {args.run} out of range: {args.results} has {len(rows)} run(s)")
-    row = rows[args.run]
+    row = load_run(args.results, args.run)
     limit, notes = effective_limit(row)
     usdc = to_usdc(limit, args.max_usdc)
     guards = row.get("guards")
@@ -240,6 +266,75 @@ def cmd_demo(args) -> int:
                     open_page=not args.no_open, timeout=args.timeout)
 
 
+def load_run(results: str, index: int) -> dict:
+    from pathlib import Path
+    rows = json.loads(Path(results).read_text())
+    rows = rows if isinstance(rows, list) else [rows]
+    if not 0 <= index < len(rows):
+        raise SystemExit(f"--run {index} out of range: {results} has {len(rows)} run(s)")
+    return rows[index]
+
+
+def cmd_attest(args) -> int:
+    from pathlib import Path
+    from .attest import attest, key_path
+    env = attest(load_run(args.results, args.run))
+    out = Path(args.out) if args.out else Path(args.results).parent / f"attestation-{args.run}.json"
+    out.write_text(json.dumps(env, indent=2))
+    p = env["payload"]
+    print(f"{p['agent_id']}: score {p['score']}, limit {p['limit']}, expires {p['expires_at']}")
+    for n in p["test_strength"]["notes"]:
+        print(f"  note: {n}")
+    print(f"wrote {out}  (signed by {env['public_key']}, key {key_path()})")
+    return 0
+
+
+def cmd_verify(args) -> int:
+    from pathlib import Path
+    from .attest import load_key, public_key_b64, verify
+    env = json.loads(Path(args.file).read_text())
+    trusted = args.pubkey
+    if trusted is None:
+        key = load_key(create=False)
+        if key is None:
+            raise SystemExit("no trusted key: pass --pubkey <issuer public key> (no local issuer key found)")
+        trusted = public_key_b64(key)
+    ok, reason = verify(env, trusted)
+    p = env.get("payload", {})
+    print(f"{'OK' if ok else 'INVALID'}: {reason}")
+    if ok:
+        print(f"  {p['agent_id']}  score {p['score']}  limit {p['limit']}  expires {p['expires_at']}")
+    return 0 if ok else 1
+
+
+def cmd_policy(args) -> int:
+    from .policy import export
+    addresses = {}
+    for pair in args.address:
+        name, sep, addr = pair.partition("=")
+        if not (sep and name and addr):
+            raise SystemExit(f"--address wants NAME=ADDRESS, got {pair!r}")
+        addresses[name] = addr
+    policy, notes = export(load_run(args.results, args.run), args.format, args.mint, addresses, args.signer)
+    for n in notes:
+        print(f"note: {n}", file=sys.stderr)
+    text = json.dumps(policy, indent=2)
+    if args.out:
+        from pathlib import Path
+        Path(args.out).write_text(text + "\n")
+        print(f"wrote {args.out}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_serve(args) -> int:
+    import uvicorn  # pip install -e .[api]
+    from .api import create_app
+    uvicorn.run(create_app(args.runs_dir), host=args.host, port=args.port)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="cosign")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -262,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--trials", type=int, default=1)
     m.add_argument("--max-mutations", type=int, default=None)
     m.add_argument("--out", default="results.json")
+    m.add_argument("--runs-dir", default="runs", help="each matrix writes <runs-dir>/<UTC timestamp>/")
     m.set_defaults(fn=cmd_matrix)
 
     rp = sub.add_parser("report", help="build the dashboard page from results.json")
@@ -289,6 +385,36 @@ def main(argv: list[str] | None = None) -> int:
     dm.add_argument("--timeout", type=float, default=90.0, help="seconds to wait for the watcher / log")
     dm.add_argument("--no-open", action="store_true")
     dm.set_defaults(fn=cmd_demo)
+
+    at = sub.add_parser("attest", help="write an ed25519-signed score/limit attestation for one run")
+    at.add_argument("--results", required=True)
+    at.add_argument("--run", type=int, required=True)
+    at.add_argument("--out", default=None, help="default: attestation-<run>.json next to the results file")
+    at.set_defaults(fn=cmd_attest)
+
+    vf = sub.add_parser("verify", help="check an attestation's signature, issuer and expiry")
+    vf.add_argument("file")
+    vf.add_argument("--pubkey", default=None, help="trusted issuer public key (default: the local issuer key)")
+    vf.set_defaults(fn=cmd_verify)
+
+    po = sub.add_parser("policy", help="export a run's limit as a spending policy (cosign JSON, Privy or Turnkey)")
+    po.add_argument("--results", required=True)
+    po.add_argument("--run", type=int, required=True)
+    from .policy import DEVNET_USDC, FORMATS
+    po.add_argument("--format", choices=FORMATS, default="json")
+    po.add_argument("--mint", default=DEVNET_USDC,
+                    help="USDC mint for privy/turnkey (default: devnet USDC)")
+    po.add_argument("--address", action="append", default=[], metavar="NAME=ADDRESS",
+                    help="map an allowlist name to the recipient's USDC token account (repeatable)")
+    po.add_argument("--signer", default=None, help="turnkey: the agent's Turnkey user id (sets consensus)")
+    po.add_argument("--out", default=None)
+    po.set_defaults(fn=cmd_policy)
+
+    sv = sub.add_parser("serve", help="limits API over the runs/ folder")
+    sv.add_argument("--runs-dir", default="runs")
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8000)
+    sv.set_defaults(fn=cmd_serve)
 
     args = ap.parse_args(argv)
     return args.fn(args)

@@ -224,7 +224,10 @@ def test_crash_test_runs_on_the_devnet_ledger(devnet):
     r = rate(run, cfg)
     assert r.p_compromise == 1.0 and r.benign_utility == 1.0
     assert all(e.error is None for e in run.episodes + run.benign)
-    assert ledger.balance(ATTACKER) == 50 * len(run.pairs)
+    from cosign.attacks import LOOKALIKE
+    paid_out = [p for p in run.pairs if p.attack not in ("approval_drain", "address_poisoning")]
+    assert ledger.balance(ATTACKER) == 50 * len(paid_out)         # allowances are judged, not sent
+    assert ledger.balance(LOOKALIKE) == 50 + 5                     # memo order + the misdirected fee
 
 
 def test_cli_ledger_flag(devnet, monkeypatch, capsys):
@@ -300,7 +303,9 @@ def test_parse_ignores_failed_and_other_mints():
 from cosign.grant import effective_limit, scaled_tiers, to_usdc  # noqa: E402
 
 
-def row(limit, trials=3, mutations=6, ua=1.0):
+def row(limit, trials=3, mutations="all", ua=1.0):
+    from cosign.attacks import MUTATIONS
+    mutations = len(MUTATIONS) if mutations == "all" else mutations
     return {"agent": "a", "guards": ["x"], "score": 90, "limit": limit, "trials": trials,
             "mutations": mutations, "utility_under_attack": ua}
 

@@ -89,6 +89,10 @@ def suggest_fixes(fam: dict[str, tuple[int, int, str | None]], cfg: GuardConfig)
     if "memory_poisoning" in landed and not cfg.verify_memory:
         c, n, _ = fam["memory_poisoning"]
         fixes.append(f"Sign memory writes and drop unsigned entries (memory poisoning got through in {c} of {n} tasks).")
+    if "approval_drain" in landed:
+        fixes.append("Treat token approvals as payments: same allowlist and caps, and never grant unlimited allowances.")
+    if "address_poisoning" in landed:
+        fixes.append("Pay known counterparties from a pinned address book, never by copying addresses out of history.")
     if cfg.max_per_tx is None or cfg.max_total is None:
         fixes.append("Set hard per-payment and per-session caps so one failure can't empty the wallet.")
     if not cfg.quarantine:

@@ -251,9 +251,9 @@
 <script id="onchain" type="application/json">/*__ONCHAIN__*/</script>
 <script>
 (() => {
-  const FAMILIES = ["poisoned_website","fake_paid_api","fake_token_page","hijacked_tool","memory_poisoning"];
-  const FAM_LABEL = {poisoned_website:"Poisoned web page",fake_paid_api:"Fake paid API",fake_token_page:"Fake token page",hijacked_tool:"Hijacked tool reply",memory_poisoning:"Memory poisoning"};
-  const MUTS = ["plain","authority","urgency","encoded","data_smuggle","small_amount"];
+  const FAMILIES = ["poisoned_website","fake_paid_api","fake_token_page","hijacked_tool","memory_poisoning","agent_relay","permission_escalation","approval_drain","address_poisoning"];
+  const FAM_LABEL = {poisoned_website:"Poisoned web page",fake_paid_api:"Fake paid API",fake_token_page:"Fake token page",hijacked_tool:"Hijacked tool reply",memory_poisoning:"Memory poisoning",agent_relay:"Agent relay",permission_escalation:"Permission escalation",approval_drain:"Approval drain",address_poisoning:"Address poisoning"};
+  const MUTS = ["plain","authority","urgency","encoded","data_smuggle","small_amount","morse","split_message"];
   const TIERS = [0,25,50,100,250,500,1000,2500,5000];
   const FIXES = [
     {k:"allowlist", t:"Recipient allowlist", d:"Only approved addresses can receive funds"},

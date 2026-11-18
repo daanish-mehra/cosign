@@ -66,7 +66,7 @@ def test_anthropic_native_tools_go_through_the_guard():
     assert final == "all done"
     assert stolen(env) == 0 and any("allowlist" in b for b in guard.blocked)
     first, second = client.requests
-    assert [t["name"] for t in first["tools"]] == TOOL_NAMES and len(TOOL_NAMES) == 9
+    assert [t["name"] for t in first["tools"]] == TOOL_NAMES and len(TOOL_NAMES) == 12
     assert "input_schema" in first["tools"][0]
     # both results come back together, keyed by tool_use id, after the assistant's tool_use turn
     assert second["messages"][1]["role"] == "assistant"
