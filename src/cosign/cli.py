@@ -223,11 +223,7 @@ def cmd_grant(args) -> int:
     from .grant import apply, effective_limit, scaled_tiers, to_usdc
     from .solana_ledger import SolanaLedger
 
-    rows = json.loads(Path(args.results).read_text())
-    rows = rows if isinstance(rows, list) else [rows]
-    if not 0 <= args.run < len(rows):
-        raise SystemExit(f"--run {args.run} out of range: {args.results} has {len(rows)} run(s)")
-    row = rows[args.run]
+    row = load_run(args.results, args.run)
     limit, notes = effective_limit(row)
     usdc = to_usdc(limit, args.max_usdc)
     guards = row.get("guards")
@@ -265,6 +261,47 @@ def cmd_demo(args) -> int:
                     min_usdc=args.min_usdc, log=Path(args.log),
                     results=Path(args.results) if args.results else None, report_out=args.out,
                     open_page=not args.no_open, timeout=args.timeout)
+
+
+def load_run(results: str, index: int) -> dict:
+    from pathlib import Path
+    rows = json.loads(Path(results).read_text())
+    rows = rows if isinstance(rows, list) else [rows]
+    if not 0 <= index < len(rows):
+        raise SystemExit(f"--run {index} out of range: {results} has {len(rows)} run(s)")
+    return rows[index]
+
+
+def cmd_attest(args) -> int:
+    from pathlib import Path
+    from .attest import attest, key_path
+    env = attest(load_run(args.results, args.run))
+    out = Path(args.out) if args.out else Path(args.results).parent / f"attestation-{args.run}.json"
+    out.write_text(json.dumps(env, indent=2))
+    p = env["payload"]
+    print(f"{p['agent_id']}: score {p['score']}, limit {p['limit']}, expires {p['expires_at']}")
+    for n in p["test_strength"]["notes"]:
+        print(f"  note: {n}")
+    print(f"wrote {out}  (signed by {env['public_key']}, key {key_path()})")
+    return 0
+
+
+def cmd_verify(args) -> int:
+    from pathlib import Path
+    from .attest import load_key, public_key_b64, verify
+    env = json.loads(Path(args.file).read_text())
+    trusted = args.pubkey
+    if trusted is None:
+        key = load_key(create=False)
+        if key is None:
+            raise SystemExit("no trusted key: pass --pubkey <issuer public key> (no local issuer key found)")
+        trusted = public_key_b64(key)
+    ok, reason = verify(env, trusted)
+    p = env.get("payload", {})
+    print(f"{'OK' if ok else 'INVALID'}: {reason}")
+    if ok:
+        print(f"  {p['agent_id']}  score {p['score']}  limit {p['limit']}  expires {p['expires_at']}")
+    return 0 if ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -317,6 +354,17 @@ def main(argv: list[str] | None = None) -> int:
     dm.add_argument("--timeout", type=float, default=90.0, help="seconds to wait for the watcher / log")
     dm.add_argument("--no-open", action="store_true")
     dm.set_defaults(fn=cmd_demo)
+
+    at = sub.add_parser("attest", help="write an ed25519-signed score/limit attestation for one run")
+    at.add_argument("--results", required=True)
+    at.add_argument("--run", type=int, required=True)
+    at.add_argument("--out", default=None, help="default: attestation-<run>.json next to the results file")
+    at.set_defaults(fn=cmd_attest)
+
+    vf = sub.add_parser("verify", help="check an attestation's signature, issuer and expiry")
+    vf.add_argument("file")
+    vf.add_argument("--pubkey", default=None, help="trusted issuer public key (default: the local issuer key)")
+    vf.set_defaults(fn=cmd_verify)
 
     args = ap.parse_args(argv)
     return args.fn(args)
