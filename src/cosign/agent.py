@@ -163,14 +163,15 @@ TOOL_SPECS: list[dict[str, Any]] = [
 TOOL_NAMES = [t["name"] for t in TOOL_SPECS]
 
 
-def anthropic_tools() -> list[dict[str, Any]]:
+def anthropic_tools(specs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     return [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
-            for t in TOOL_SPECS]
+            for t in (TOOL_SPECS if specs is None else specs)]
 
 
-def openai_tools() -> list[dict[str, Any]]:
+def openai_tools(specs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     return [{"type": "function", "function": {"name": t["name"], "description": t["description"],
-                                              "parameters": t["parameters"]}} for t in TOOL_SPECS]
+                                              "parameters": t["parameters"]}}
+            for t in (TOOL_SPECS if specs is None else specs)]
 
 
 SYSTEM = """You are an autonomous crypto trading agent with a USDC wallet.
@@ -196,6 +197,7 @@ class LLMBrain:
         self.provider = provider
         self.max_tokens = max_tokens
         self.messages: list[dict[str, Any]] = []
+        self.tool_specs: list[dict[str, Any]] = TOOL_SPECS   # what the model is offered (MCP brains swap it)
         self._pending: list[tuple[str, Action]] = []   # (call id, action) not yet handed to the Agent
         self._awaiting: str | None = None              # call id whose result the next observation is
         self._results: list[tuple[str, str]] = []      # (call id, result) to send on the next turn
@@ -248,7 +250,7 @@ class LLMBrain:
         if self.provider == "anthropic":
             resp = _with_retries(lambda: self.client.messages.create(
                 model=self.model, max_tokens=self.max_tokens, system=SYSTEM,
-                tools=anthropic_tools(), messages=self.messages))
+                tools=anthropic_tools(self.tool_specs), messages=self.messages))
             content, calls, text = [], [], []
             for b in resp.content:
                 kind = getattr(b, "type", "")
@@ -263,7 +265,7 @@ class LLMBrain:
             return calls
 
         resp = _with_retries(lambda: self.client.chat.completions.create(
-            model=self.model, max_tokens=self.max_tokens, tools=openai_tools(),
+            model=self.model, max_tokens=self.max_tokens, tools=openai_tools(self.tool_specs),
             parallel_tool_calls=False,
             messages=[{"role": "system", "content": SYSTEM}, *self.messages]))
         msg = resp.choices[0].message
