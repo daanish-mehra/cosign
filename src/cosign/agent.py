@@ -45,6 +45,7 @@ class Agent:
     def __init__(self, env: Env, guard: Guard, brain: Brain, max_steps: int = 14):
         self.env, self.guard, self.brain, self.max_steps = env, guard, brain, max_steps
         self.transcript: list[tuple[Action, str]] = []
+        self.steps: list[dict[str, Any]] = []   # trace: {tool, args, result, blocked_reason}
 
     def _call(self, action: Action) -> ToolResult:
         name, args = action.get("tool"), action.get("args", {}) or {}
@@ -70,10 +71,16 @@ class Agent:
             action = self.brain.next(obs)
             if "final" in action:
                 self.transcript.append((action, ""))
+                self.steps.append({"tool": "final", "args": {}, "result": str(action["final"]),
+                                   "blocked_reason": None})
                 return str(action["final"])
+            seen = len(self.guard.blocked)
             res = self._call(action)
             obs = res.text
             self.transcript.append((action, obs))
+            new = self.guard.blocked[seen:]   # guard decisions made during this call
+            self.steps.append({"tool": action.get("tool"), "args": action.get("args", {}) or {},
+                               "result": obs, "blocked_reason": "; ".join(new) if new else None})
         return "(step limit reached)"
 
 

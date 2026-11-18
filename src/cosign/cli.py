@@ -100,8 +100,28 @@ def cmd_test(args) -> int:
     return 0
 
 
+def trace_lines(run_index: int, run) -> list[dict]:
+    """One record per episode (benign first, then attacked), for runs/<ts>/traces.jsonl."""
+    return [{"run": run_index, "task": e.task, "attack": e.attack, "mutation": e.mutation, "trial": e.trial,
+             "stolen": e.stolen, "task_ok": e.task_ok, "error": e.error, "steps": e.steps}
+            for e in run.benign + run.episodes]
+
+
+def new_run_dir(root: str) -> "Path":
+    from datetime import datetime, timezone
+    from pathlib import Path
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    d, n = Path(root) / stamp, 1
+    while d.exists():  # two matrices in the same second
+        d, n = Path(root) / f"{stamp}-{n}", n + 1
+    d.mkdir(parents=True)
+    return d
+
+
 def cmd_matrix(args) -> int:
     rows, results = [], []
+    run_dir = new_run_dir(args.runs_dir)
+    (run_dir / "traces.jsonl").touch()
     for spec in [s.strip() for s in args.models.split(",") if s.strip()]:
         try:
             brains = brain_factory(spec)
@@ -126,8 +146,13 @@ def cmd_matrix(args) -> int:
                 print(f"warn {spec} / {g}: {errs}/{total} episodes hit API errors; "
                       f"first: {next(e.error for e in run.benign + run.episodes if e.error)}", file=sys.stderr)
             rows.append((spec, g, r))
-            results.append({"agent": spec, "guards": run.guard, "trials": args.trials, "mutations": run.mutations,
-                            "episodes": len(run.episodes) + len(run.benign), **asdict(r)})
+            results.append({"agent": spec, "guards": run.guard, "preset": g, "trials": args.trials,
+                            "mutations": run.mutations, "episodes": len(run.episodes) + len(run.benign),
+                            **asdict(r)})
+            with open(run_dir / "traces.jsonl", "a") as f:   # written as each run finishes
+                for line in trace_lines(len(results) - 1, run):
+                    f.write(json.dumps(line) + "\n")
+            (run_dir / "results.json").write_text(json.dumps(results, indent=2))
             print(f"done {spec:<32} {g:<12} score={r.score:<3} limit={r.limit}", file=sys.stderr)
 
     print(f"\n{'agent':<32} {'guards':<12} {'score':>5} {'limit':>6} {'P':>5} {'loss':>5} {'util':>5}")
@@ -135,10 +160,12 @@ def cmd_matrix(args) -> int:
     for spec, g, r in rows:
         print(f"{spec:<32} {g:<12} {r.score:>5} {r.limit:>6} {r.p_compromise:>5.0%} "
               f"{r.lgd:>5.0%} {r.benign_utility:>5.0%}")
+    (run_dir / "results.json").write_text(json.dumps(results, indent=2))
+    print(f"\nsaved {run_dir}/results.json and traces.jsonl")
     if args.out:
         with open(args.out, "w") as f:
             json.dump(results, f, indent=2)
-        print(f"\nsaved {args.out}")
+        print(f"saved {args.out}")
     return 0
 
 
@@ -262,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--trials", type=int, default=1)
     m.add_argument("--max-mutations", type=int, default=None)
     m.add_argument("--out", default="results.json")
+    m.add_argument("--runs-dir", default="runs", help="each matrix writes <runs-dir>/<UTC timestamp>/")
     m.set_defaults(fn=cmd_matrix)
 
     rp = sub.add_parser("report", help="build the dashboard page from results.json")
