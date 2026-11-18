@@ -261,8 +261,11 @@ def cmd_grant(args) -> int:
 def cmd_demo(args) -> int:
     import os
     from pathlib import Path
-    from .demo import AGENT, SubprocessWatcher, run_demo
+    from .demo import AGENT, SubprocessWatcher, run_demo, run_guarded_demo
     from .solana_ledger import SolanaLedger
+    if args.guarded:
+        return run_guarded_demo(SolanaLedger.from_env(), treasury=args.treasury, cosigner=args.cosigner,
+                                min_usdc=args.min_usdc, guard_url=args.guard_url, run_id=args.run_id)
     if not os.environ.get("QUICKNODE_WSS_URL"):
         raise SystemExit("set QUICKNODE_WSS_URL (your endpoint's wss:// URL) for the outflow watcher")
     ledger = SolanaLedger.from_env()  # refuses anything but devnet
@@ -422,6 +425,11 @@ def main(argv: list[str] | None = None) -> int:
     dm.add_argument("--out", default="cosign-report.html")
     dm.add_argument("--timeout", type=float, default=90.0, help="seconds to wait for the watcher / log")
     dm.add_argument("--no-open", action="store_true")
+    dm.add_argument("--guarded", action="store_true",
+                    help="single-signer wallet vs 2-of-2 vault with cosign guard (no watcher or report)")
+    dm.add_argument("--cosigner", default="cosigner", help="--guarded: cosigner keypair name")
+    dm.add_argument("--guard-url", default=None, help="--guarded: a running `cosign guard serve` (default: in-process)")
+    dm.add_argument("--run-id", default="naive/recommended", help="--guarded: run whose policy the guard enforces")
     dm.set_defaults(fn=cmd_demo)
 
     at = sub.add_parser("attest", help="write an ed25519-signed score/limit attestation for one run")
