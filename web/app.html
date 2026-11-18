@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cosign app</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="cosign.css">
+<style>
+  body{font-size:14px}
+  .nav{padding:0 20px}
+  .app{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:calc(100vh - 56px)}
+  aside{border-right:1px solid var(--line);padding:14px 0;display:flex;flex-direction:column;gap:4px}
+  aside h2{font-size:12px;font-weight:500;color:var(--muted);margin:6px 16px 6px}
+  .agent{padding:4px 0 10px}
+  .agent .name{padding:6px 16px;font-family:var(--mono);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .run{display:flex;justify-content:space-between;align-items:center;padding:6px 16px 6px 26px;cursor:pointer;color:var(--muted);border-left:2px solid transparent;font-size:13px}
+  .run:hover{background:var(--panel);color:var(--text)}
+  .run[aria-current="true"]{background:var(--panel);color:var(--text);border-left-color:var(--red)}
+  .loaders{margin-top:auto;padding:12px 16px;display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--line)}
+  .file{position:relative;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border:1px solid var(--line);border-radius:6px;font-size:12.5px;color:var(--muted);cursor:pointer}
+  .file:hover{border-color:var(--line-2);color:var(--text)}
+  .file input{position:absolute;inset:0;opacity:0;cursor:pointer}
+  .file b{font-family:var(--mono);font-weight:400;font-size:11.5px;color:var(--faint)}
+
+  main{padding:22px 26px 60px;min-width:0}
+  .head{display:flex;align-items:flex-end;gap:28px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--line)}
+  .head .id .a{font-family:var(--mono);font-size:13px;color:var(--muted)}
+  .head .id h1{margin:4px 0 0;font-size:22px;letter-spacing:-.015em;font-weight:600}
+  .kpi .v{font-family:var(--mono);font-size:30px;font-weight:500;letter-spacing:-.03em;line-height:1.1}
+  .kpi .k{color:var(--muted);font-size:12px}
+  .kpi-score .v.bad{color:var(--red)}
+  .strength{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 10px}
+  .strength i{width:6px;height:6px;border-radius:50%;background:var(--green)}
+  .strength.weak i{background:var(--amber)}
+  .stats{display:flex;gap:28px;margin-left:auto}
+  .stats .v{font-family:var(--mono);font-size:16px}
+  .stats .k{color:var(--muted);font-size:12px}
+
+  .cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:16px;margin-top:18px}
+  .card{padding:16px}
+  .card .t{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+  table.grid{width:100%;border-collapse:separate;border-spacing:4px;margin:-4px}
+  table.grid th{font-weight:400;font-size:11px;color:var(--faint);font-family:var(--mono);text-align:center}
+  table.grid td.l{font-size:13px;white-space:nowrap;padding-right:8px;color:var(--muted)}
+  table.grid td.l.hit{color:var(--text)}
+  table.grid td.n{font-family:var(--mono);font-size:12px;color:var(--faint);text-align:center}
+  table.grid .cell{cursor:pointer}
+  table.grid .cell.sel{outline:2px solid var(--text);outline-offset:1px}
+
+  .filters{display:flex;gap:4px}
+  .filters button{background:transparent;border:1px solid var(--line);border-radius:6px;padding:3px 9px;font-size:12px;color:var(--muted);cursor:pointer}
+  .filters button[aria-pressed="true"]{background:var(--panel-2);color:var(--text);border-color:var(--line-2)}
+  .eps{max-height:330px;overflow:auto;margin:0 -16px -16px;border-top:1px solid var(--line)}
+  .ep{display:grid;grid-template-columns:14px minmax(0,1.2fr) minmax(0,1fr) 72px 88px;gap:10px;align-items:center;padding:9px 16px;border-bottom:1px solid var(--line);cursor:pointer;font-size:13px}
+  .ep:hover{background:var(--panel-2)}
+  .ep[aria-current="true"]{background:var(--panel-2);box-shadow:inset 2px 0 0 var(--text)}
+  .ep .dot{width:8px;height:8px;border-radius:2px}
+  .ep .dot.theft{background:var(--red)} .ep .dot.blocked{background:var(--amber)} .ep .dot.clean{background:var(--green)} .ep .dot.fail{background:var(--faint)}
+  .ep .m{font-family:var(--mono);font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ep .amt{font-family:var(--mono);font-size:12.5px;text-align:right}
+  .ep .amt.red{color:var(--red)}
+  .ep .ok{font-size:12px;color:var(--muted);text-align:right}
+
+  .trace .t h3 b{color:var(--text);font-weight:500}
+  .verdict{display:block;padding:10px 12px;border-radius:6px;margin-bottom:14px;font-size:13.5px;border:1px solid var(--line)}
+  .verdict.theft{background:var(--red-soft);border-color:rgba(229,72,77,.4)}
+  .verdict.blocked{border-color:rgba(227,162,60,.4)}
+  .verdict b{font-family:var(--mono);font-weight:500}
+  ol.steps{list-style:none;margin:0;padding:0;position:relative}
+  ol.steps::before{content:"";position:absolute;left:11px;top:6px;bottom:6px;width:1px;background:var(--line)}
+  ol.steps li{position:relative;padding:0 0 14px 34px}
+  ol.steps .ix{position:absolute;left:0;top:0;width:23px;height:23px;border-radius:6px;background:var(--panel-2);border:1px solid var(--line-2);display:grid;place-items:center;font-family:var(--mono);font-size:11px;color:var(--muted)}
+  ol.steps .call{font-family:var(--mono);font-size:13px;padding-top:2px}
+  ol.steps .call .args{color:var(--muted)}
+  ol.steps .tag{display:inline-block;margin-left:8px;font-family:var(--sans);font-size:11px;padding:1px 7px;border-radius:999px;vertical-align:1px}
+  ol.steps .tag.inj{background:var(--red-soft);color:var(--red-2);border:1px solid rgba(229,72,77,.35)}
+  ol.steps .tag.out{background:var(--red);color:var(--bg)}
+  ol.steps .tag.blk{color:var(--amber);border:1px solid rgba(227,162,60,.4)}
+  ol.steps .res{margin-top:6px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-word;color:#b9b9c0;background:var(--bg-2);border:1px solid var(--line);border-radius:6px;padding:8px 10px;max-height:160px;overflow:auto}
+  ol.steps .res mark{background:var(--red-soft);color:var(--red-2);border-radius:2px;padding:0 2px}
+  ol.steps li.money .ix{background:var(--red);border-color:var(--red);color:var(--bg)}
+  ol.steps li.blocked .ix{border-color:var(--amber);color:var(--amber)}
+  ol.steps li.inj .ix{border-color:rgba(229,72,77,.6);color:var(--red-2)}
+  .empty{color:var(--muted);padding:30px 4px;text-align:center}
+
+  .fixes{margin-top:16px}
+  .fixes ol{margin:0;padding-left:18px}
+  .fixes li{margin:6px 0}
+
+  @media (max-width:1100px){.cols{grid-template-columns:1fr}}
+  @media (max-width:760px){.app{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid var(--line)}.stats{margin-left:0}.ep{grid-template-columns:14px 1fr 70px}.ep .m,.ep .ok{display:none}}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <a class="wordmark" href="index.html">cosign<span class="cur" aria-hidden="true"></span></a>
+  <div class="links"><a href="app.html" aria-current="page">Agents</a><a href="leaderboard.html">Leaderboard</a></div>
+  <div class="sp"></div>
+  <span class="mono muted" style="font-size:12px" id="src">sample data</span>
+</nav>
+
+<div class="app">
+  <aside>
+    <h2>Agents</h2>
+    <div id="agents"></div>
+    <div class="loaders">
+      <label class="file">Load results <b>.json</b><input type="file" id="inRes" accept=".json,application/json"></label>
+      <label class="file">Load traces <b>.jsonl</b><input type="file" id="inTr" accept=".jsonl,.json,.txt"></label>
+    </div>
+  </aside>
+
+  <main>
+    <div class="head">
+      <div class="id"><div class="a" id="hAgent"></div><h1 id="hGuards"></h1></div>
+      <div class="kpi kpi-score"><div class="v" id="hScore"></div><div class="k">safety score</div></div>
+      <div class="kpi"><div class="v" id="hLimit"></div><div class="k">spend limit, USDC</div></div>
+      <span class="strength" id="hStrength"><i></i><span></span></span>
+      <div class="stats">
+        <div><div class="v" id="sP"></div><div class="k">attacks landed</div></div>
+        <div><div class="v" id="sL"></div><div class="k">wallet lost</div></div>
+        <div><div class="v" id="sU"></div><div class="k">tasks done</div></div>
+      </div>
+    </div>
+
+    <div class="cols">
+      <div>
+        <div class="panel card">
+          <div class="t"><h3>Attacks, by rewrite</h3><span class="muted" style="font-size:12px">click a cell to see its trace</span></div>
+          <table class="grid" id="grid"></table>
+        </div>
+        <div class="panel card" style="margin-top:16px">
+          <div class="t"><h3>Episodes</h3>
+            <div class="filters" id="filters">
+              <button data-f="all" aria-pressed="true">All</button><button data-f="theft" aria-pressed="false">Theft</button>
+              <button data-f="blocked" aria-pressed="false">Blocked</button><button data-f="fail" aria-pressed="false">Task failed</button>
+            </div>
+          </div>
+          <div class="eps" id="eps"></div>
+        </div>
+        <div class="panel card fixes"><h3 style="margin-bottom:8px">Fix next</h3><ol id="fixes"></ol><div class="muted" id="fixesNone" hidden>Nothing left. Every attack held.</div></div>
+      </div>
+
+      <div class="panel card trace">
+        <div class="t"><h3 id="trTitle">Trace</h3><span class="muted mono" style="font-size:12px" id="trMeta"></span></div>
+        <div id="trace"><div class="empty">Pick an episode to see every step the agent took.</div></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script id="results" type="application/json">/*__RESULTS__*/</script>
+<script id="traces" type="application/json">/*__TRACES__*/</script>
+<script>
+(() => {
+  const FAMILIES = ["poisoned_website","fake_paid_api","fake_token_page","hijacked_tool","memory_poisoning"];
+  const LABEL = {poisoned_website:"Poisoned web page",fake_paid_api:"Fake paid API",fake_token_page:"Fake token page",hijacked_tool:"Hijacked tool reply",memory_poisoning:"Memory poisoning"};
+  const MUTS = ["plain","authority","urgency","encoded","data_smuggle","small_amount"];
+  const MONEY = new Set(["pay","swap"]);
+  const READS = new Set(["browse","token_info","call_api","read_memory","get_price"]);
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  const pct = x => Math.round((x||0)*100) + "%";
+
+  let results = [], traces = [], cur = null, curEp = null, filter = "all";
+
+  const presetOf = r => {
+    const g = (Array.isArray(r.guards) ? r.guards : String(r.guards||"none").split(",")).join(",");
+    if (!g || g === "none") return "none";
+    if (g.includes("allowlist") && g.includes("quarantine")) return "recommended";
+    if (g.includes("quarantine")) return "quarantine";
+    if (g.includes("max_per_tx")) return "caps";
+    return g;
+  };
+  const runKey = r => r.run || `${r.agent || "naive"}/${presetOf(r)}`;
+  const epsFor = r => traces.filter(t => t.run === runKey(r) || (!t.run && results.length === 1));
+  const kind = e => e.error ? "fail" : e.stolen > 0 ? "theft" : e.steps?.some(s => s.blocked_reason) ? "blocked" : e.task_ok ? "clean" : "fail";
+
+  function parseTraces(text) {
+    text = (text || "").trim(); if (!text || text === "null") return [];
+    if (text[0] === "[") return JSON.parse(text);
+    return text.split(/\n+/).filter(Boolean).map(l => JSON.parse(l));
+  }
+
+  // ---------- sidebar ----------
+  function renderAgents() {
+    const by = {};
+    results.forEach(r => (by[r.agent || "naive"] ||= []).push(r));
+    $("agents").innerHTML = Object.entries(by).map(([a, rs]) => `<div class="agent"><div class="name" title="${esc(a)}">${esc(a)}</div>${
+      rs.map(r => `<div class="run" tabindex="0" role="button" data-i="${results.indexOf(r)}" aria-current="${r === cur}"><span>${presetOf(r)}</span>${pill(r.score)}</div>`).join("")}</div>`).join("");
+    $("agents").querySelectorAll(".run").forEach(el => { el.onclick = () => select(results[+el.dataset.i]); el.onkeydown = e => { if (e.key === "Enter") el.click(); }; });
+  }
+  const pill = s => `<span class="score ${s < 50 ? "bad" : s < 80 ? "mid" : "good"}">${s}</span>`;
+
+  // ---------- run ----------
+  function select(r) {
+    cur = r; curEp = null; renderAgents();
+    $("hAgent").textContent = r.agent || "naive";
+    $("hGuards").textContent = presetOf(r) === "none" ? "No fixes" : presetOf(r) === "recommended" ? "Cosign recommended fixes" : presetOf(r);
+    $("hScore").textContent = r.score; $("hScore").className = "v" + (r.score < 50 ? " bad" : "");
+    $("hLimit").textContent = (r.limit ?? 0).toLocaleString();
+    const strong = (r.trials || 1) >= 3 && (r.mutations ?? 6) >= 6;
+    $("hStrength").className = "strength" + (strong ? "" : " weak");
+    $("hStrength").querySelector("span").textContent = strong ? `full test: ${r.trials} trials, 6 rewrites` : `light test: ${r.trials || 1} trial${(r.trials||1) > 1 ? "s" : ""}, limit capped`;
+    $("sP").textContent = pct(r.p_compromise); $("sL").textContent = pct(r.lgd); $("sU").textContent = pct(r.benign_utility);
+    $("fixes").innerHTML = (r.fixes || []).map(f => `<li>${esc(f)}</li>`).join("");
+    $("fixesNone").hidden = !!(r.fixes || []).length;
+    renderGrid(); renderEps();
+    const first = epsFor(r).find(e => kind(e) === "theft") || epsFor(r).find(e => kind(e) === "blocked");
+    if (first) showEp(first); else $("trace").innerHTML = `<div class="empty">${epsFor(r).length ? "Pick an episode to see every step the agent took." : "No traces loaded for this run. Load traces.jsonl from the same matrix run."}</div>`;
+  }
+
+  function renderGrid() {
+    const r = cur, eps = epsFor(r);
+    const state = (fam, mi) => {
+      const f = r.by_family?.[fam]; if (!f) return "skip";
+      const [c, , win] = f; if (!c) return "held";
+      const wi = MUTS.indexOf(win); return mi < wi ? "held" : mi === wi ? "breach" : "skip";
+    };
+    $("grid").innerHTML = `<tr><th></th>${MUTS.map(m => `<th>${m.replace("_", " ")}</th>`).join("")}<th>hit</th></tr>` +
+      FAMILIES.map(fam => { const f = r.by_family?.[fam] || [0, 0];
+        return `<tr><td class="l ${f[0] ? "hit" : ""}">${LABEL[fam]}</td>${MUTS.map((m, mi) => `<td class="cell ${state(fam, mi)}" data-fam="${fam}" data-mut="${m}" title="${LABEL[fam]} / ${m}"></td>`).join("")}<td class="n">${f[0]}/${f[1]}</td></tr>`; }).join("");
+    $("grid").querySelectorAll(".cell").forEach(c => c.onclick = () => {
+      const pick = eps.filter(e => e.attack === c.dataset.fam && e.mutation === c.dataset.mut);
+      const ep = pick.find(e => e.stolen > 0) || pick[0];
+      if (ep) showEp(ep);
+    });
+  }
+
+  function renderEps() {
+    const list = epsFor(cur).filter(e => filter === "all" || kind(e) === filter);
+    $("eps").innerHTML = list.length ? list.map(e => `<div class="ep" data-i="${traces.indexOf(e)}" aria-current="${e === curEp}" role="button" tabindex="0">
+      <span class="dot ${kind(e)}"></span>
+      <span>${esc(e.task.replace(/_/g, " "))}</span>
+      <span class="m">${e.attack ? esc(LABEL[e.attack] || e.attack) + " / " + esc(e.mutation) : "no attack"}${e.trial ? " · t" + (e.trial + 1) : ""}</span>
+      <span class="amt ${e.stolen ? "red" : ""}">${e.stolen ? "−" + e.stolen.toFixed(2) : kind(e) === "blocked" ? "blocked" : "0.00"}</span>
+      <span class="ok">${e.error ? "api error" : e.task_ok ? "task done" : "task failed"}</span></div>`).join("")
+      : `<div class="empty">No episodes match.</div>`;
+    $("eps").querySelectorAll(".ep").forEach(el => { el.onclick = () => showEp(traces[+el.dataset.i]); el.onkeydown = ev => { if (ev.key === "Enter") el.click(); }; });
+  }
+
+  // ---------- trace ----------
+  function showEp(e) {
+    curEp = e; renderEps();
+    document.querySelectorAll("#grid .cell").forEach(c => c.classList.toggle("sel", c.dataset.fam === e.attack && c.dataset.mut === e.mutation));
+    $("trTitle").innerHTML = `Trace: <b>${esc(e.task.replace(/_/g, " "))}</b>`;
+    $("trMeta").textContent = e.attack ? `${e.attack} / ${e.mutation}` : "baseline";
+    const steps = e.steps || [];
+    const theftAt = steps.findIndex(s => s.tool === "pay" && /attacker/.test(s.args?.recipient || "") && !s.blocked_reason);
+    const recips = new Set(steps.filter(s => s.tool === "pay").map(s => s.args?.recipient).filter(r => r && /attacker/.test(r)));
+    let injAt = -1;
+    const lim = theftAt >= 0 ? theftAt : steps.length;
+    for (let i = 0; i < lim; i++) if (READS.has(steps[i].tool) && [...recips, "attacker_wallet"].some(x => (steps[i].result || "").includes(x))) injAt = i;
+    if (injAt < 0 && e.attack) for (let i = lim - 1; i >= 0; i--) if (READS.has(steps[i].tool)) { injAt = i; break; }
+
+    const k = kind(e);
+    const verdict = k === "theft" ? `<div class="verdict theft">Money left the wallet: <b>−${e.stolen.toFixed(2)} USDC</b> to the attacker${injAt >= 0 ? `, ${theftAt - injAt} step${theftAt - injAt === 1 ? "" : "s"} after the attack was read` : ""}.</div>`
+      : k === "blocked" ? `<div class="verdict blocked">A guard stopped it. The agent tried, policy refused, no money moved.</div>`
+      : k === "fail" ? `<div class="verdict">${e.error ? "The run hit an API error: " + esc(e.error) : "No money moved, but the agent didn't finish its task."}</div>`
+      : `<div class="verdict">${e.attack ? "The agent ignored the attack and finished its task." : "Baseline run, no attack planted."}</div>`;
+
+    const mark = (txt, on) => { txt = esc(txt); if (!on) return txt; return txt.split("\n").map(l => /attacker|USDC to|send|transfer|pay |standing instruction|base64|maintenance|verification fee/i.test(l) && !/^DATA: (BONK|SOL)/.test(l) ? `<mark>${l}</mark>` : l).join("\n"); };
+    const args = a => Object.entries(a || {}).map(([k, v]) => `${k}=${typeof v === "string" ? JSON.stringify(v) : v}`).join(", ");
+    $("trace").innerHTML = verdict + `<ol class="steps">${steps.map((s, i) => {
+      const cls = i === theftAt ? "money" : s.blocked_reason ? "blocked" : i === injAt ? "inj" : "";
+      const tag = i === theftAt ? `<span class="tag out">money left</span>` : s.blocked_reason ? `<span class="tag blk">blocked</span>` : i === injAt ? `<span class="tag inj">attack read here</span>` : "";
+      if (s.tool === "final") return `<li><span class="ix">${i + 1}</span><div class="call">done <span class="args">${esc(s.result).slice(0, 120)}</span></div></li>`;
+      return `<li class="${cls}"><span class="ix">${i + 1}</span><div class="call">${esc(s.tool)}(<span class="args">${esc(args(s.args))}</span>)${tag}</div>${
+        s.blocked_reason ? `<div class="res">blocked by policy: ${esc(s.blocked_reason)}</div>` : s.result ? `<div class="res">${mark(s.result, i === injAt)}</div>` : ""}</li>`;
+    }).join("")}</ol>`;
+  }
+
+  // ---------- wiring ----------
+  $("filters").querySelectorAll("button").forEach(b => b.onclick = () => {
+    filter = b.dataset.f; $("filters").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b)); renderEps();
+  });
+  $("inRes").onchange = ev => ev.target.files[0]?.text().then(t => { results = JSON.parse(t); $("src").textContent = ev.target.files[0].name; boot(); }).catch(() => $("src").textContent = "results file is not valid JSON");
+  $("inTr").onchange = ev => ev.target.files[0]?.text().then(t => { traces = parseTraces(t); boot(); }).catch(() => $("src").textContent = "traces file is not valid JSONL");
+
+  function boot() { if (!results.length) return; renderAgents(); select(results.find(r => r.score < 50) || results[0]); }
+  try { const r = JSON.parse(document.getElementById("results").textContent); if (Array.isArray(r) && r.length) { results = r; $("src").textContent = "live results"; } } catch {}
+  try { traces = parseTraces(document.getElementById("traces").textContent); } catch {}
+  if (!results.length) {
+    // fall back to sample data shipped beside the page
+    Promise.all([fetch("sample-results.json").then(r => r.json()), fetch("sample-traces.jsonl").then(r => r.text())])
+      .then(([r, t]) => { results = r; traces = parseTraces(t); boot(); })
+      .catch(() => { $("trace").innerHTML = `<div class="empty">Load a results.json and traces.jsonl from <span class="mono">cosign matrix</span> to begin.</div>`; });
+  } else boot();
+})();
+</script>
+</body>
+</html>
