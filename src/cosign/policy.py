@@ -37,6 +37,16 @@ def spending_policy(row: dict) -> dict:
     }
 
 
+
+def signed_limit(row: dict, key=None, now=None) -> dict:
+    """The wallet-facing attestation: limit + spending policy, ed25519-signed, valid 7 days."""
+    from datetime import datetime, timezone
+    from .attest import VALID_FOR, _iso, sign
+    now = now or datetime.now(timezone.utc)
+    policy = spending_policy(row)
+    return sign({"agent_id": policy["agent_id"], "agent_hash": policy["agent_hash"], "limit": policy["limit"],
+                 "policy": policy, "issued_at": _iso(now), "expires_at": _iso(now + VALID_FOR)}, key)
+
 # --- platform exports --------------------------------------------------------------
 # Both platforms check one transaction at a time, so they get the per-tx cap and the allowlist.
 # Neither policy language has a rolling daily total: daily_cap stays with Cosign (or the SPL

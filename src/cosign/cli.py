@@ -361,6 +361,18 @@ def cmd_vault(args) -> int:
     return 0
 
 
+def cmd_guard(args) -> int:
+    import uvicorn  # pip install -e .[api,solana]
+    from .attest import load_key
+    from .guard_service import Cosigner, create_app, runs_lookup
+    from .solana_ledger import SolanaLedger
+    ledger = SolanaLedger.from_env()
+    cos = Cosigner(ledger, args.cosigner, load_key(), runs_lookup(args.runs_dir), args.log, args.allow)
+    print(f"cosign guard: cosigner {cos.pubkey}, policies from {args.runs_dir}/, log {args.log}", file=sys.stderr)
+    uvicorn.run(create_app(cos), host=args.host, port=args.port)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="cosign")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -451,6 +463,18 @@ def main(argv: list[str] | None = None) -> int:
     vfund.add_argument("--agent", default="agent_wallet")
     vfund.add_argument("--usdc", type=float, required=True)
     va.set_defaults(fn=cmd_vault)
+
+    gd = sub.add_parser("guard", help="cosigner for 2-of-2 vaults: refuses transfers outside the earned policy")
+    gsub = gd.add_subparsers(dest="action", required=True)
+    gs = gsub.add_parser("serve", help="POST /v1/cosign: check an agent-signed transfer, cosign and submit or refuse")
+    gs.add_argument("--cosigner", default="cosigner", help="keypair name of the cosigner (a vault member)")
+    gs.add_argument("--runs-dir", default="runs", help="crash-test runs the policies come from")
+    gs.add_argument("--log", default="logs/guard.log")
+    gs.add_argument("--allow", action="append", default=[], metavar="NAME|ADDRESS",
+                    help="recipients a tainted episode may pay when the policy has no allowlist (repeatable)")
+    gs.add_argument("--host", default="127.0.0.1")
+    gs.add_argument("--port", type=int, default=8100)
+    gd.set_defaults(fn=cmd_guard)
 
     args = ap.parse_args(argv)
     return args.fn(args)
