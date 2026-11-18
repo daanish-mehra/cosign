@@ -75,3 +75,24 @@ def test_cli_matrix_files_and_outputs(tmp_path):
     bad.write_text("{oops")
     pr_comment.main(["--head", str(head), "--base", str(bad), "--out", str(out)])
     assert "No baseline" in out.read_text()
+
+
+def test_action_runs_this_script_and_reads_its_outputs():
+    import re
+    from pathlib import Path
+
+    import pytest
+    yaml = pytest.importorskip("yaml")
+    action_dir = Path(__file__).parent.parent / ".github" / "actions" / "cosign"
+    action = yaml.safe_load((action_dir / "action.yml").read_text())
+    steps = {s.get("name") or s.get("uses"): s for s in action["runs"]["steps"]}
+    assert action["runs"]["using"] == "composite"
+    assert all("shell" in s for s in steps.values() if "run" in s)
+
+    fmt = steps["Format comment"]
+    script = fmt["env"]["PR_COMMENT"].replace("${{ github.action_path }}", str(action_dir))
+    assert Path(script).resolve() == Path(pr_comment.__file__).resolve()
+    assert "--github-output" in fmt["run"] and "--base-name" in fmt["run"]
+    written = {"score", "limit", "score_delta"}
+    assert {re.search(r"outputs\.(\w+)", o["value"]).group(1) for o in action["outputs"].values()} == written
+    assert MARKER in steps["Post comment"]["run"]
