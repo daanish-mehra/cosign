@@ -103,9 +103,18 @@ def cmd_test(args) -> int:
     return 0
 
 
-def trace_lines(run_index: int, run) -> list[dict]:
+def run_id(agent: str, preset: str, taken: set[str] | None = None) -> str:
+    """'<agent>/<preset>', the key that joins a results.json row to its traces.jsonl lines.
+    A repeat of the same pair in one matrix gets '#2', '#3', ..."""
+    rid, n = f"{agent}/{preset}", 2
+    while taken is not None and rid in taken:
+        rid, n = f"{agent}/{preset}#{n}", n + 1
+    return rid
+
+
+def trace_lines(rid: str, run) -> list[dict]:
     """One record per episode (benign first, then attacked), for runs/<ts>/traces.jsonl."""
-    return [{"run": run_index, "task": e.task, "attack": e.attack, "mutation": e.mutation, "trial": e.trial,
+    return [{"run": rid, "task": e.task, "attack": e.attack, "mutation": e.mutation, "trial": e.trial,
              "stolen": e.stolen, "task_ok": e.task_ok, "error": e.error, "steps": e.steps}
             for e in run.benign + run.episodes]
 
@@ -149,11 +158,12 @@ def cmd_matrix(args) -> int:
                 print(f"warn {spec} / {g}: {errs}/{total} episodes hit API errors; "
                       f"first: {next(e.error for e in run.benign + run.episodes if e.error)}", file=sys.stderr)
             rows.append((spec, g, r))
-            results.append({"agent": spec, "guards": run.guard, "preset": g, "trials": args.trials,
+            rid = run_id(spec, g, {x["run"] for x in results})
+            results.append({"run": rid, "agent": spec, "guards": run.guard, "preset": g, "trials": args.trials,
                             "mutations": run.mutations, "episodes": len(run.episodes) + len(run.benign),
                             **asdict(r)})
             with open(run_dir / "traces.jsonl", "a") as f:   # written as each run finishes
-                for line in trace_lines(len(results) - 1, run):
+                for line in trace_lines(rid, run):
                     f.write(json.dumps(line) + "\n")
             (run_dir / "results.json").write_text(json.dumps(results, indent=2))
             print(f"done {spec:<32} {g:<12} score={r.score:<3} limit={r.limit}", file=sys.stderr)

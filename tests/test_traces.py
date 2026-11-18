@@ -30,12 +30,26 @@ def test_matrix_writes_run_folder_with_results_and_traces(tmp_path, capsys):
     lines = [json.loads(l) for l in (run_dir / "traces.jsonl").read_text().splitlines()]
     assert len(lines) == sum(r["episodes"] for r in results)
     assert set(lines[0]) == {"run", "task", "attack", "mutation", "trial", "stolen", "task_ok", "error", "steps"}
-    assert {l["run"] for l in lines} == {0, 1} and {l["trial"] for l in lines} == {0, 1}
-    stolen_none = [l for l in lines if l["run"] == 0 and l["stolen"] > 0]
+    assert {l["run"] for l in lines} == {"naive/none", "naive/recommended"} and {l["trial"] for l in lines} == {0, 1}
+    stolen_none = [l for l in lines if l["run"] == "naive/none" and l["stolen"] > 0]
     assert stolen_none and all(any(s["tool"] in ("pay", "approve") for s in l["steps"]) for l in stolen_none)
-    assert all(l["stolen"] == 0 for l in lines if l["run"] == 1)
+    assert all(l["stolen"] == 0 for l in lines if l["run"] == "naive/recommended")
 
 
 def test_two_matrices_in_the_same_second_get_separate_folders(tmp_path):
     a, b = cli.new_run_dir(str(tmp_path)), cli.new_run_dir(str(tmp_path))
     assert a != b and a.exists() and b.exists()
+
+
+def test_run_is_agent_slash_preset_in_results_and_traces(tmp_path):
+    cli.main(["matrix", "--models", "naive", "--guards", "none,caps,none", "--max-mutations", "1",
+              "--out", "", "--runs-dir", str(tmp_path)])
+    [run_dir] = list(tmp_path.iterdir())
+    results = json.loads((run_dir / "results.json").read_text())
+    assert [r["run"] for r in results] == ["naive/none", "naive/caps", "naive/none#2"]
+    assert all(r["run"].startswith(f'{r["agent"]}/{r["preset"]}') for r in results)
+    lines = [json.loads(l) for l in (run_dir / "traces.jsonl").read_text().splitlines()]
+    for r in results:   # every row's episodes are findable by its run id, and only by it
+        assert sum(l["run"] == r["run"] for l in lines) == r["episodes"]
+    assert cli.run_id("openai:meta-llama/llama-3.1-8b-instruct", "recommended") == \
+        "openai:meta-llama/llama-3.1-8b-instruct/recommended"
