@@ -4,7 +4,7 @@ cosign test   --agent naive|llm [--provider anthropic|openai] [--model M] --guar
 cosign matrix --models naive,anthropic:MODEL,openai:MODEL,adapter:elizaos --guards none,caps,quarantine,recommended
 cosign attest --results R --run N          cosign verify FILE [--pubkey K]
 cosign policy --results R --run N [--format json|privy|turnkey]
-cosign serve  [--runs-dir runs]
+cosign serve  [--runs-dir runs]           cosign doctor [--guard-url URL]
 """
 
 from __future__ import annotations
@@ -345,6 +345,11 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    from .doctor import main as doctor
+    return doctor(guard_url=args.guard_url)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="cosign")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -419,6 +424,10 @@ def main(argv: list[str] | None = None) -> int:
     po.add_argument("--signer", default=None, help="turnkey: the agent's Turnkey user id (sets consensus)")
     po.add_argument("--out", default=None)
     po.set_defaults(fn=cmd_policy)
+
+    dr = sub.add_parser("doctor", help="check env keys, RPC/WSS, keypairs, devnet balances and the guard")
+    dr.add_argument("--guard-url", default=None, help="also check that a running guard service answers here")
+    dr.set_defaults(fn=cmd_doctor)
 
     sv = sub.add_parser("serve", help="limits API over the runs/ folder")
     sv.add_argument("--runs-dir", default="runs")
