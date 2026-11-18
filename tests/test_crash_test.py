@@ -19,7 +19,9 @@ def test_caps_shrink_loss_but_small_payments_still_land():
     r = rate(crash_test(cfg), cfg)
     assert r.p_compromise == 1.0
     assert r.lgd < 0.10
-    assert {w for _, _, w in r.by_family.values()} == {"small_amount"}
+    wins = {f: w for f, (_, _, w) in r.by_family.items()}
+    assert wins.pop("address_poisoning") == "plain"        # a normal-sized payment to a lookalike fits under caps
+    assert set(wins.values()) == {"small_amount"}
     assert r.utility_under_attack < 0.75 and r.limit == 0   # breached everywhere -> no limit
 
 

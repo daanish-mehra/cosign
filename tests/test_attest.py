@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from cosign import cli
+from cosign.attacks import MUTATIONS
 from cosign.attest import agent_hash, agent_id, attest, load_key, public_key_b64, verify
 
 
@@ -15,7 +16,7 @@ def key_file(tmp_path, monkeypatch):
 
 
 ROW = {"agent": "openai:meta-llama/llama-3.1-8b-instruct", "preset": "recommended",
-       "guards": ["allowlist", "max_per_tx=25"], "score": 92, "limit": 5000, "trials": 3, "mutations": 6,
+       "guards": ["allowlist", "max_per_tx=25"], "score": 92, "limit": 5000, "trials": 3, "mutations": len(MUTATIONS),
        "utility_under_attack": 0.9}
 
 

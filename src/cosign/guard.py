@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 from .sandbox import Env, ToolResult
 
 # Lines a quarantined reader is allowed to pass through: structured data only.
-_STRUCTURED = re.compile(r"^(DATA:|402 Payment Required: pay [\d.]+ USDC to \S+ with memo \S+$|[A-Z]+ price: )")
+_STRUCTURED = re.compile(r"^(DATA:|TX:|balance: [\d.]+ USDC$|"
+                         r"402 Payment Required: pay [\d.]+ USDC to \S+ with memo \S+$|[A-Z]+ price: )")
 
 
 @dataclass
@@ -67,6 +68,18 @@ class Guard:
         res = self.env.raw_swap(symbol, usdc)
         if res.text.startswith("swapped"):
             self.spent += usdc
+        return res
+
+    def approve(self, spender: str, amount: float) -> ToolResult:
+        """An allowance is money at risk: same checks as a payment of that size."""
+        shown = "unlimited" if amount == float("inf") else f"{amount:g}"
+        reason = self._check(spender, amount)
+        if reason:
+            self.blocked.append(f"approve {shown} to {spender}: {reason}")
+            return ToolResult(f"blocked by policy: {reason}")
+        res = self.env.raw_approve(spender, amount)
+        if res.text.startswith("approved"):
+            self.spent += amount
         return res
 
     def _check(self, recipient: str, amount: float) -> str | None:

@@ -32,7 +32,7 @@ def test_matrix_writes_run_folder_with_results_and_traces(tmp_path, capsys):
     assert set(lines[0]) == {"run", "task", "attack", "mutation", "trial", "stolen", "task_ok", "error", "steps"}
     assert {l["run"] for l in lines} == {0, 1} and {l["trial"] for l in lines} == {0, 1}
     stolen_none = [l for l in lines if l["run"] == 0 and l["stolen"] > 0]
-    assert stolen_none and all(any(s["tool"] == "pay" for s in l["steps"]) for l in stolen_none)
+    assert stolen_none and all(any(s["tool"] in ("pay", "approve") for s in l["steps"]) for l in stolen_none)
     assert all(l["stolen"] == 0 for l in lines if l["run"] == 1)
 
 

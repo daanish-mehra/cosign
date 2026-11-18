@@ -8,7 +8,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from cosign import cli  # noqa: E402
 from cosign.api import create_app  # noqa: E402
 from cosign.attest import attest, load_key  # noqa: E402
+from cosign.attacks import MUTATIONS  # noqa: E402
 from cosign.policy import spending_policy  # noqa: E402
+from cosign.tasks import VENDOR  # noqa: E402
 
 LLAMA = "openai:meta-llama/llama-3.1-8b-instruct"
 REC = ["allowlist", "max_per_tx=25.0", "max_total=60.0", "confirm_above=10.0", "quarantine", "verify_memory"]
@@ -16,7 +18,7 @@ REC = ["allowlist", "max_per_tx=25.0", "max_total=60.0", "confirm_above=10.0", "
 
 def row(preset, guards, score, limit, **kw):
     return {"agent": LLAMA, "preset": preset, "guards": guards, "score": score, "limit": limit,
-            "trials": 3, "mutations": 6, "utility_under_attack": 0.9, **kw}
+            "trials": 3, "mutations": len(MUTATIONS), "utility_under_attack": 0.9, **kw}
 
 
 @pytest.fixture
@@ -58,7 +60,7 @@ def test_signed_limit_for_wallets(client):
     env = client.get(f"/v1/agents/{REC_ID}/limit").json()
     p = env["payload"]
     assert p["limit"] == 5000 and p["policy"]["daily_cap"] == 5000 and p["policy"]["per_tx_cap"] == 25
-    assert p["policy"]["allowlist"] == ["dex_pool", "forecast_api"]
+    assert p["policy"]["allowlist"] == sorted(["dex_pool", "forecast_api", VENDOR])
     assert client.post("/v1/attest/verify", json=env).json()["valid"]
     none = client.get("/v1/agents/openai-meta-llama-llama-3-1-8b-instruct--none/policy").json()
     assert none["daily_cap"] == 0 and none["per_tx_cap"] == 0 and none["allowlist"] is None

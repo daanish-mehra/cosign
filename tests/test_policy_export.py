@@ -4,6 +4,7 @@ import pytest
 
 from cosign import cli
 from cosign.attacks import MUTATIONS
+from cosign.tasks import VENDOR
 from cosign.policy import DEVNET_USDC, export, privy_policy, spending_policy, turnkey_policy
 
 REC = ["allowlist", "max_per_tx=25.0", "max_total=60.0", "confirm_above=10.0", "quarantine", "verify_memory"]
@@ -24,7 +25,7 @@ def test_privy_rule_caps_amount_mint_and_destination():
     assert all(c["field_source"] == "solana_token_program_instruction" for c in conds.values())
     assert conds["TransferChecked.mint"]["value"] == DEVNET_USDC
     assert conds["TransferChecked.amount"] == {**conds["TransferChecked.amount"], "operator": "lte", "value": "25000000"}
-    assert conds["TransferChecked.destination"]["value"] == ["DexTokenAcct111", "forecast_api"]
+    assert conds["TransferChecked.destination"]["value"] == [VENDOR, "DexTokenAcct111", "forecast_api"]
     assert any("'forecast_api' is a test name" in n for n in notes)
     assert not any("'dex_pool'" in n for n in notes)
     assert any("daily_cap" in n for n in notes)
@@ -40,13 +41,13 @@ def test_privy_without_allowlist_and_zero_limit():
 def test_turnkey_condition_and_consensus():
     pol = spending_policy(row())
     out, notes = turnkey_policy(pol, mint="MintX", signer="user-123",
-                                addresses={"dex_pool": "A1", "forecast_api": "B2"})
+                                addresses={"dex_pool": "A1", "forecast_api": "B2", VENDOR: "C3"})
     assert out["effect"] == "EFFECT_ALLOW"
     assert out["consensus"] == "approvers.any(user, user.id == 'user-123')"
     c = out["condition"]
     assert "solana.tx.spl_transfers.all(transfer, " in c and "solana.tx.transfers.count() == 0" in c
     assert "transfer.token_mint == 'MintX'" in c and "transfer.amount <= 25000000" in c
-    assert "transfer.to in ['A1', 'B2']" in c
+    assert "transfer.to in ['C3', 'A1', 'B2']" in c
     assert not any("test name" in n for n in notes) and not any("consensus" in n for n in notes)
 
     out, notes = turnkey_policy(spending_policy(row(["none"], 0)))
@@ -64,10 +65,10 @@ def test_cli_formats(tmp_path, capsys):
     results = tmp_path / "r.json"
     results.write_text(json.dumps([row()]))
     cli.main(["policy", "--results", str(results), "--run", "0", "--format", "privy",
-              "--address", "dex_pool=AAA", "--address", "forecast_api=BBB"])
+              "--address", "dex_pool=AAA", "--address", "forecast_api=BBB", "--address", f"{VENDOR}=CCC"])
     cap = capsys.readouterr()
     p = json.loads(cap.out)
-    assert p["rules"][0]["conditions"][-1]["value"] == ["AAA", "BBB"] and "test name" not in cap.err
+    assert p["rules"][0]["conditions"][-1]["value"] == ["CCC", "AAA", "BBB"] and "test name" not in cap.err
 
     out = tmp_path / "tk.json"
     cli.main(["policy", "--results", str(results), "--run", "0", "--format", "turnkey",
