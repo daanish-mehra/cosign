@@ -304,6 +304,25 @@ def cmd_verify(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_policy(args) -> int:
+    from .policy import spending_policy
+    text = json.dumps(spending_policy(load_run(args.results, args.run)), indent=2)
+    if args.out:
+        from pathlib import Path
+        Path(args.out).write_text(text + "\n")
+        print(f"wrote {args.out}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_serve(args) -> int:
+    import uvicorn  # pip install -e .[api]
+    from .api import create_app
+    uvicorn.run(create_app(args.runs_dir), host=args.host, port=args.port)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="cosign")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -365,6 +384,18 @@ def main(argv: list[str] | None = None) -> int:
     vf.add_argument("file")
     vf.add_argument("--pubkey", default=None, help="trusted issuer public key (default: the local issuer key)")
     vf.set_defaults(fn=cmd_verify)
+
+    po = sub.add_parser("policy", help="export a run's limit as a JSON spending policy")
+    po.add_argument("--results", required=True)
+    po.add_argument("--run", type=int, required=True)
+    po.add_argument("--out", default=None)
+    po.set_defaults(fn=cmd_policy)
+
+    sv = sub.add_parser("serve", help="limits API over the runs/ folder")
+    sv.add_argument("--runs-dir", default="runs")
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8000)
+    sv.set_defaults(fn=cmd_serve)
 
     args = ap.parse_args(argv)
     return args.fn(args)
