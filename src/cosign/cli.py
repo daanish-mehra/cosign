@@ -2,6 +2,9 @@
 
 cosign test   --agent naive|llm [--provider anthropic|openai] [--model M] --guards PRESET [--ledger sim|devnet]
 cosign matrix --models naive,anthropic:MODEL,openai:MODEL,adapter:elizaos --guards none,caps,quarantine,recommended
+cosign attest --results R --run N          cosign verify FILE [--pubkey K]
+cosign policy --results R --run N [--format json|privy|turnkey]
+cosign serve  [--runs-dir runs]
 """
 
 from __future__ import annotations
@@ -305,8 +308,17 @@ def cmd_verify(args) -> int:
 
 
 def cmd_policy(args) -> int:
-    from .policy import spending_policy
-    text = json.dumps(spending_policy(load_run(args.results, args.run)), indent=2)
+    from .policy import export
+    addresses = {}
+    for pair in args.address:
+        name, sep, addr = pair.partition("=")
+        if not (sep and name and addr):
+            raise SystemExit(f"--address wants NAME=ADDRESS, got {pair!r}")
+        addresses[name] = addr
+    policy, notes = export(load_run(args.results, args.run), args.format, args.mint, addresses, args.signer)
+    for n in notes:
+        print(f"note: {n}", file=sys.stderr)
+    text = json.dumps(policy, indent=2)
     if args.out:
         from pathlib import Path
         Path(args.out).write_text(text + "\n")
@@ -385,9 +397,16 @@ def main(argv: list[str] | None = None) -> int:
     vf.add_argument("--pubkey", default=None, help="trusted issuer public key (default: the local issuer key)")
     vf.set_defaults(fn=cmd_verify)
 
-    po = sub.add_parser("policy", help="export a run's limit as a JSON spending policy")
+    po = sub.add_parser("policy", help="export a run's limit as a spending policy (cosign JSON, Privy or Turnkey)")
     po.add_argument("--results", required=True)
     po.add_argument("--run", type=int, required=True)
+    from .policy import DEVNET_USDC, FORMATS
+    po.add_argument("--format", choices=FORMATS, default="json")
+    po.add_argument("--mint", default=DEVNET_USDC,
+                    help="USDC mint for privy/turnkey (default: devnet USDC)")
+    po.add_argument("--address", action="append", default=[], metavar="NAME=ADDRESS",
+                    help="map an allowlist name to the recipient's USDC token account (repeatable)")
+    po.add_argument("--signer", default=None, help="turnkey: the agent's Turnkey user id (sets consensus)")
     po.add_argument("--out", default=None)
     po.set_defaults(fn=cmd_policy)
 
