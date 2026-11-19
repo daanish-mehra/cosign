@@ -36,6 +36,9 @@ def test_selection():
     assert [t.id for t in select_techniques(ids)] == ["search.scam_swap.homoglyph", "poisoned_website"]
     with pytest.raises(ValueError, match="unknown technique.*nope"):
         select_techniques("nope")
+    plus = select_techniques("core,invoice.recurring.plain")
+    assert plus[:9] == CORE_TECHNIQUES and [t.id for t in plus[9:]] == ["invoice.recurring.plain"]
+    assert select_techniques("full,core") == TECHNIQUES and select_techniques(" , ") == CORE_TECHNIQUES
 
 
 def plant(tech, mutation):

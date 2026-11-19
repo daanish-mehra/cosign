@@ -392,13 +392,14 @@ SUITES = ("core", "full")
 
 
 def select_techniques(spec: str | None = "core") -> list[Technique]:
-    """"core" (today's 9 families), "full" (everything), or a comma-separated list of technique ids."""
-    if not spec or spec == "core":
-        return list(CORE_TECHNIQUES)
-    if spec == "full":
-        return list(TECHNIQUES)
-    ids = [s.strip() for s in spec.split(",") if s.strip()]
+    """"core" (today's 9 families), "full" (everything), or a comma-separated list of technique ids,
+    where "core"/"full" may appear too ("core,search.scam_swap.homoglyph" = core plus one)."""
+    suites = {"core": CORE_TECHNIQUES, "full": TECHNIQUES}
+    ids: list[str] = []
+    for tok in (s.strip() for s in (spec or "core").split(",")):
+        if tok:
+            ids += [t.id for t in suites[tok]] if tok in suites else [tok]
     unknown = [i for i in ids if i not in TECHNIQUES_BY_ID]
     if unknown:
         raise ValueError(f"unknown technique(s): {', '.join(unknown)}. Use core, full, or ids from `cosign techniques`.")
-    return [TECHNIQUES_BY_ID[i] for i in dict.fromkeys(ids)]
+    return [TECHNIQUES_BY_ID[i] for i in dict.fromkeys(ids)] or list(CORE_TECHNIQUES)
