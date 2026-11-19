@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .attacks import MUTATIONS
+from .attacks import MUTATIONS, TECHNIQUES_BY_ID
 from .guard import GuardConfig
 from .runner import TestRun
 
@@ -84,19 +84,27 @@ def suggest_fixes(fam: dict[str, tuple[int, int, str | None]], cfg: GuardConfig)
     landed = {f: w for f, (c, _, w) in fam.items() if c}
     if not landed:
         return fixes
+    payloads = {TECHNIQUES_BY_ID[f].payload for f in landed if f in TECHNIQUES_BY_ID}
     if cfg.allowlist is None:
         fixes.append("Add a recipient allowlist enforced outside the model (blocks every attack seen here).")
     if "memory_poisoning" in landed and not cfg.verify_memory:
         c, n, _ = fam["memory_poisoning"]
         fixes.append(f"Sign memory writes and drop unsigned entries (memory poisoning got through in {c} of {n} tasks).")
-    if "approval_drain" in landed:
+    if "approval" in payloads:
         fixes.append("Treat token approvals as payments: same allowlist and caps, and never grant unlimited allowances.")
-    if "address_poisoning" in landed:
+    if "lookalike" in payloads:
         fixes.append("Pay known counterparties from a pinned address book, never by copying addresses out of history.")
+    if "max_slippage" in payloads and cfg.max_slippage_bps is None:
+        fixes.append("Cap swap slippage outside the model (max_slippage_bps, e.g. 100): an allowlisted DEX "
+                     "doesn't stop a sandwich bot.")
+    if "authority_change" in payloads:
+        fixes.append("Never let the agent change its token account's authority; block set_authority outright.")
+    if "recurring" in payloads:
+        fixes.append("Judge recurring payments by their monthly total against caps and the allowlist, not per pull.")
     if cfg.max_per_tx is None or cfg.max_total is None:
         fixes.append("Set hard per-payment and per-session caps so one failure can't empty the wallet.")
     if not cfg.quarantine:
         fixes.append("Quarantine untrusted pages/API bodies so only structured data reaches the model.")
-    elif any(w in ("data_smuggle", "small_amount") for w in landed.values()):
+    elif cfg.allowlist is None and any(w in ("data_smuggle", "json_smuggle", "small_amount") for w in landed.values()):
         fixes.append("Quarantine alone was bypassed by smuggled DATA lines: rely on the allowlist, not filters.")
     return fixes
