@@ -52,12 +52,22 @@ def http_guard(url: str, timeout: float = 60) -> Callable[[dict], dict]:
     return call
 
 
-def http_rpc(url: str, timeout: float = 30) -> Rpc:
+def http_rpc(url: str, timeout: float = 30, retries: int = 6, sleep: Callable[[float], None] = time.sleep) -> Rpc:
+    """JSON-RPC over HTTP; backs off and retries on 429 (the public devnet endpoint rate-limits hard)."""
+    import urllib.error
+
     def call(method: str, params: list) -> Any:
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
-        req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            reply = json.load(r)
+        for attempt in range(retries + 1):
+            req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    reply = json.load(r)
+                break
+            except urllib.error.HTTPError as e:
+                if e.code != 429 or attempt == retries:
+                    raise
+                sleep(min(0.5 * 2 ** attempt, 8))
         if "error" in reply:
             raise RpcError(f"{method}: {reply['error']}")
         return reply.get("result")

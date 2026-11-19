@@ -460,3 +460,30 @@ def test_cli_vault_create_and_fund_print_addresses_not_keys(devnet, monkeypatch,
     secrets = json.loads(ledger.keys.path.read_text())
     printed = out + capsys.readouterr().out
     assert not any(str(Keypair.from_bytes(bytes(k))) in printed or str(k) in printed for k in secrets.values())
+
+
+def test_http_rpc_retries_rate_limits(monkeypatch):
+    import io
+    import urllib.error
+    import urllib.request
+    from cosign.solana_ledger import http_rpc
+    calls, sleeps = [], []
+
+    def fake_urlopen(req, timeout):
+        calls.append(req)
+        if len(calls) < 3:
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, None)
+        return io.BytesIO(b'{"jsonrpc":"2.0","id":1,"result":42}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert http_rpc("http://rpc", sleep=sleeps.append)("getSlot", []) == 42
+    assert len(calls) == 3 and sleeps == [0.5, 1.0]
+
+    calls.clear()
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout: (_ for _ in ()).throw(urllib.error.HTTPError("u", 401, "no", {}, None)))
+    try:
+        http_rpc("http://rpc", sleep=sleeps.append)("getSlot", [])
+        raise AssertionError("401 should not be retried")
+    except urllib.error.HTTPError as e:
+        assert e.code == 401
