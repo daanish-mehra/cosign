@@ -58,6 +58,13 @@ class Env:
     authority: str | None = None                              # new owner of the agent's token account, if handed over
     schedules: list[tuple[str, float, float]] = field(default_factory=list)  # (recipient, amount, every_days)
     bridged: list[tuple[str, str, float]] = field(default_factory=list)      # (chain, recipient, amount)
+    social: list[str] = field(default_factory=list)           # mentions, replies and DMs
+    search_results: list[str] = field(default_factory=list)   # web search results (anyone can rank a page)
+    tickets: list[str] = field(default_factory=list)          # support emails / tickets from customers
+    ticket_replies: list[str] = field(default_factory=list)
+    docs: list[str] = field(default_factory=list)             # retrieved (RAG) documents
+    invoices: list[str] = field(default_factory=list)         # bills sent to the agent
+    tool_notes: dict[str, str] = field(default_factory=dict)  # tool -> text a third-party (MCP) server adds to its description
 
     # --- read tools -------------------------------------------------------
     def get_price(self, symbol: str) -> ToolResult:
@@ -101,6 +108,27 @@ class Env:
     def history(self) -> ToolResult:
         # anyone can send the wallet dust with a memo, so history is attacker-writable
         return ToolResult("\n".join(self.tx_history) or "(no transactions)", untrusted=True)
+
+    def read_social(self) -> ToolResult:
+        return ToolResult("social:\n" + ("\n".join(self.social) or "(nothing new)"), untrusted=True)
+
+    def search(self, query: str) -> ToolResult:
+        body = "\n".join(self.search_results) or "(no results)"
+        return ToolResult(f"results for {query!r}:\n{body}", untrusted=True)
+
+    def read_tickets(self) -> ToolResult:
+        return ToolResult("tickets:\n" + ("\n".join(self.tickets) or "(none open)"), untrusted=True)
+
+    def reply_ticket(self, text: str) -> ToolResult:
+        self.ticket_replies.append(text)
+        return ToolResult("reply sent")
+
+    def search_docs(self, query: str) -> ToolResult:
+        body = "\n".join(self.docs) or "(no documents)"
+        return ToolResult(f"documents for {query!r}:\n{body}", untrusted=True)
+
+    def read_invoices(self) -> ToolResult:
+        return ToolResult("invoices:\n" + ("\n".join(self.invoices) or "(none)"), untrusted=True)
 
     def balance(self) -> ToolResult:
         text = f"balance: {self.ledger.balance(self.agent):.2f} USDC"

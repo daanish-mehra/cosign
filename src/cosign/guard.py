@@ -145,6 +145,17 @@ class Guard:
         lines = [f"- {m.text}" for m in kept]
         return ToolResult("memory:\n" + "\n".join(lines) if lines else "memory: (empty)")
 
+    def tool_notes(self) -> dict[str, str]:
+        """Third-party tool-description text the brain may see. Quarantine treats it like any untrusted text."""
+        if not self.cfg.quarantine:
+            return dict(self.env.tool_notes)
+        kept = {}
+        for tool, text in self.env.tool_notes.items():
+            res = self.filter(ToolResult(text, untrusted=True))
+            if res.text != "(no structured data)":
+                kept[tool] = res.text
+        return kept
+
     def filter(self, res: ToolResult) -> ToolResult:
         if not (self.cfg.quarantine and res.untrusted):
             return res
