@@ -10,12 +10,11 @@ POST /v1/attest/verify          verify an attestation against this server's issu
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 
-from .attest import VALID_FOR, _iso, agent_id, attest, load_key, public_key_b64, sign, verify
+from .attest import agent_id, attest, load_key, public_key_b64, verify
 from .grant import effective_limit
-from .policy import spending_policy
+from .policy import signed_limit, spending_policy
 
 
 def latest_runs(runs_dir: Path) -> dict[str, dict]:
@@ -63,11 +62,7 @@ def create_app(runs_dir: str | Path = "runs", key=None):
 
     @app.get("/v1/agents/{agent}/limit")
     def agent_limit(agent: str):
-        row = find(agent)["row"]
-        now = datetime.now(timezone.utc)
-        policy = spending_policy(row)
-        return sign({"agent_id": agent, "agent_hash": policy["agent_hash"], "limit": policy["limit"],
-                     "policy": policy, "issued_at": _iso(now), "expires_at": _iso(now + VALID_FOR)}, key)
+        return signed_limit(find(agent)["row"], key)
 
     @app.get("/v1/agents/{agent}/policy")
     def agent_policy(agent: str):

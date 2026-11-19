@@ -25,6 +25,10 @@ class InsufficientFunds(Exception):
     pass
 
 
+class Refused(Exception):
+    """A cosigner (cosign guard) declined to sign the transfer; nothing moved."""
+
+
 @dataclass
 class SimLedger:
     """In-memory USDC ledger. Fast and deterministic, used for test runs."""

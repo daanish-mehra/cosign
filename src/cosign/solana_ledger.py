@@ -25,13 +25,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .ledger import InsufficientFunds, Transfer
+from .ledger import InsufficientFunds, Refused, Transfer
 
 DEVNET_RPC = "https://api.devnet.solana.com"
 DEVNET_GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
 DEVNET_USDC = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"   # Circle's devnet USDC mint
 USDC_DECIMALS = 6
 TREASURY = "treasury"
+VAULT_PREFIX = "vault:"        # keystore name of an agent's multisig account: "vault:<agent>"
 DEFAULT_KEYPAIRS = Path("~/.config/cosign/devnet-keypairs.json")
 
 Rpc = Callable[[str, list], Any]
@@ -41,12 +42,32 @@ class RpcError(Exception):
     pass
 
 
-def http_rpc(url: str, timeout: float = 30) -> Rpc:
+def http_guard(url: str, timeout: float = 60) -> Callable[[dict], dict]:
+    """POST cosign requests to a running `cosign guard serve` (url like http://127.0.0.1:8100)."""
+    def call(req: dict) -> dict:
+        body = json.dumps(req).encode()
+        r = urllib.request.Request(url.rstrip("/") + "/v1/cosign", body, {"Content-Type": "application/json"})
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            return json.load(resp)
+    return call
+
+
+def http_rpc(url: str, timeout: float = 30, retries: int = 6, sleep: Callable[[float], None] = time.sleep) -> Rpc:
+    """JSON-RPC over HTTP; backs off and retries on 429 (the public devnet endpoint rate-limits hard)."""
+    import urllib.error
+
     def call(method: str, params: list) -> Any:
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
-        req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            reply = json.load(r)
+        for attempt in range(retries + 1):
+            req = urllib.request.Request(url, body, {"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
+                    reply = json.load(r)
+                break
+            except urllib.error.HTTPError as e:
+                if e.code != 429 or attempt == retries:
+                    raise
+                sleep(min(0.5 * 2 ** attempt, 8))
         if "error" in reply:
             raise RpcError(f"{method}: {reply['error']}")
         return reply.get("result")
@@ -131,6 +152,13 @@ class SolanaLedger:
     poll: float = 1.0
     transfers: list[Transfer] = field(default_factory=list)   # this session's transfers, like SimLedger
     sent_messages: set[bytes] = field(default_factory=set, repr=False)  # share across sessions to catch repeats
+    # guarded mode (use_vault): agent name -> (multisig name, cosigner name), the guard, and its run id
+    vaults: dict[str, tuple[str, str]] = field(default_factory=dict)
+    guard: Callable[[dict], dict] | None = field(default=None, repr=False)
+    run_id: str | None = None
+    refusals: list[dict] = field(default_factory=list)   # {sender, recipient, amount, reason}
+    context_calls: int = 20                               # last N tool calls sent with each request
+    _agent: Any = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> "SolanaLedger":
@@ -168,13 +196,18 @@ class SolanaLedger:
 
     # --- Ledger interface ---
     def balance(self, address: str) -> float:
+        if address in self.vaults:            # guarded mode: the agent's money is its vault
+            address = self.vaults[address][0]
         res = self.rpc("getTokenAccountsByOwner", [str(self.pubkey(address)), {"mint": self.mint},
                                                    {"encoding": "jsonParsed", "commitment": "confirmed"}])
         return sum(float(a["account"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmountString"])
                    for a in res["value"])
 
     def transfer(self, sender: str, recipient: str, amount: float, memo: str = "") -> Transfer:
-        sig = self._send(sender, recipient, amount, memo)
+        if sender in self.vaults and self.guard is not None:
+            sig = self._send_guarded(sender, recipient, amount, memo)
+        else:
+            sig = self._send(sender, recipient, amount, memo)
         t = Transfer(sender, recipient, amount, memo, sig)
         self.transfers.append(t)
         return t
@@ -196,6 +229,8 @@ class SolanaLedger:
     # --- devnet housekeeping ---
     def fund(self, address: str, amount: float) -> None:
         """Top `address` up to `amount` USDC from the treasury (not recorded as an agent transfer)."""
+        if address in self.vaults:
+            address = self.vaults[address][0]
         short = amount - self.balance(address)
         if short <= 1e-9:
             return
@@ -211,6 +246,8 @@ class SolanaLedger:
         """Move USDC from every cosign wallet back to the treasury. Returns the amount swept."""
         total = 0.0
         for n in self.keys.names():
+            if n.startswith(VAULT_PREFIX):
+                continue   # multisig vaults need both signers; their key can't move funds
             if n != TREASURY and (b := self.balance(n)) > 0:
                 self._send(n, TREASURY, b, "cosign sweep")
                 total += b
@@ -263,6 +300,114 @@ class SolanaLedger:
         self.transfers.append(t)
         return t
 
+    # --- 2-of-2 vault: SPL Token multisig (agent + cosigner) ---------------------
+    # The vault is a USDC token account owned by an SPL multisig with m=2 over the agent key and
+    # a cosigner key. Every outflow needs both signatures, so the cosigner (cosign guard) can veto
+    # any transfer but can never move money alone.
+    @staticmethod
+    def multisig_name(agent: str) -> str:
+        return VAULT_PREFIX + agent
+
+    def create_multisig_vault(self, agent: str, cosigner: str) -> dict:
+        """Create (or confirm) the agent's multisig and its USDC token account. The fee payer
+        pays rent. Idempotent: an existing vault is checked, not recreated."""
+        from solders.system_program import CreateAccountParams, create_account
+        from spl.token.constants import MULTISIG_LEN, TOKEN_PROGRAM_ID
+        from spl.token.instructions import create_idempotent_associated_token_account, initialize_multisig
+        from spl.token.models import InitializeMultisigParams
+        from solders.pubkey import Pubkey
+
+        if agent == cosigner:
+            raise ValueError("agent and cosigner must be different keys")
+        name = self.multisig_name(agent)
+        multisig = self.keys.keypair(name).pubkey()
+        want = sorted([str(self.pubkey(agent)), str(self.pubkey(cosigner))])
+        existing = self.multisig_vault(agent)
+        if existing is not None:
+            if existing["m"] != 2 or sorted(existing["signers"]) != want:
+                raise RuntimeError(f"{multisig} already exists with other signers; refusing to reuse it")
+            if existing["token_account_exists"]:
+                return existing | {"created": False}
+            ixs = []
+        else:
+            rent = self.rpc("getMinimumBalanceForRentExemption", [MULTISIG_LEN])
+            ixs = [create_account(CreateAccountParams(from_pubkey=self.pubkey(self.fee_payer), to_pubkey=multisig,
+                                                      lamports=rent, space=MULTISIG_LEN, owner=TOKEN_PROGRAM_ID)),
+                   initialize_multisig(InitializeMultisigParams(
+                       program_id=TOKEN_PROGRAM_ID, multisig=multisig, m=2,
+                       signers=[self.pubkey(agent), self.pubkey(cosigner)]))]
+        ixs.append(create_idempotent_associated_token_account(self.pubkey(self.fee_payer), multisig,
+                                                              Pubkey.from_string(self.mint)))
+        sig = self._submit(ixs, [name] if existing is None else [])
+        return (self.multisig_vault(agent) or {}) | {"created": True, "signature": sig}
+
+    def multisig_vault(self, agent: str) -> dict | None:
+        """{'multisig', 'token_account', 'm', 'signers', 'balance', 'token_account_exists'} or None."""
+        name = self.multisig_name(agent)
+        if name not in self.keys.names():
+            return None
+        multisig = str(self.keys.keypair(name).pubkey())
+        res = self.rpc("getAccountInfo", [multisig, {"encoding": "jsonParsed", "commitment": "confirmed"}])
+        if not res or not res.get("value"):
+            return None
+        info = res["value"]["data"]["parsed"]["info"]
+        acct = str(self.token_account(name))
+        tok = self.rpc("getAccountInfo", [acct, {"encoding": "jsonParsed", "commitment": "confirmed"}])
+        exists = bool(tok and tok.get("value"))
+        bal = float(tok["value"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmountString"]) if exists else 0.0
+        return {"multisig": multisig, "token_account": acct, "m": info["numRequiredSigners"],
+                "signers": list(info["signers"][: info["numValidSigners"]]), "balance": bal,
+                "token_account_exists": exists}
+
+    def fund_vault(self, agent: str, usdc: float) -> float:
+        """Top the agent's vault up to `usdc` from the treasury. Returns the new balance."""
+        if self.multisig_vault(agent) is None:
+            raise RuntimeError(f"no vault for {agent}: run `cosign vault create` first")
+        self.fund(self.multisig_name(agent), usdc)
+        return self.balance(self.multisig_name(agent))
+
+    # --- guarded mode: vault transfers go to cosign guard for the second signature ---
+    def use_vault(self, agent: str, cosigner: str, guard: Callable[[dict], dict], run_id: str) -> None:
+        """From now on `agent`'s transfers come out of its 2-of-2 vault: built here, signed by the
+        agent, then sent to `guard` (a Cosigner.decide, or http_guard(url)) which cosigns and submits
+        or refuses. The agent pays the fee; the cosigner never does."""
+        if self.fee_payer == cosigner:
+            raise ValueError("the cosigner can't be the fee payer in guarded mode")
+        self.vaults[agent] = (self.multisig_name(agent), cosigner)
+        self.guard, self.run_id = guard, run_id
+
+    def bind_agent(self, agent) -> None:
+        """Called by Agent: its tool calls so far are the context sent with each cosign request."""
+        self._agent = agent
+
+    def episode_context(self) -> list[dict]:
+        steps = getattr(self._agent, "steps", None) or []
+        return [{"tool": s["tool"], "untrusted": bool(s.get("untrusted"))}
+                for s in steps[-self.context_calls:] if s.get("tool") != "final"]
+
+    def _send_guarded(self, sender: str, recipient: str, amount: float, memo: str) -> str:
+        from solders.transaction import Transaction
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        multisig, cosigner = self.vaults[sender]
+        have = self.balance(multisig)
+        if have + 1e-9 < amount:
+            raise InsufficientFunds(f"{sender}'s vault has {have}, tried {amount}")
+        ixs = self._transfer_ixs(multisig, recipient, amount, memo, signers=[sender, cosigner])
+        msg = self._message(ixs)
+        tx = Transaction.new_unsigned(msg)
+        own = {self.fee_payer, sender}
+        tx.partial_sign([self.keys.keypair(n) for n in sorted(own)], msg.recent_blockhash)
+        reply = self.guard({"tx": base64.b64encode(bytes(tx)).decode(), "run_id": self.run_id,
+                            "tool_calls": self.episode_context()})
+        decision, reason = reply.get("decision"), reply.get("reason", "")
+        if decision == "approve" and reply.get("signature"):
+            return reply["signature"]
+        if decision == "refuse":
+            self.refusals.append({"sender": sender, "recipient": recipient, "amount": amount, "reason": reason})
+            raise Refused(reason)
+        raise RpcError(f"cosign guard: {decision}: {reason}")
+
     # --- transactions ---
     def _send(self, sender: str, recipient: str, amount: float, memo: str) -> str:
         if amount <= 0:
@@ -273,7 +418,8 @@ class SolanaLedger:
         return self._submit(self._transfer_ixs(sender, recipient, amount, memo), [sender])
 
     def _transfer_ixs(self, authority: str, recipient: str, amount: float, memo: str,
-                      source_owner: str | None = None) -> list:
+                      source_owner: str | None = None, signers: list[str] | None = None) -> list:
+        """`signers`: when `authority` is a multisig, the member keys that will sign (memo signer = first)."""
         from solders.pubkey import Pubkey
         from spl.memo.constants import MEMO_PROGRAM_ID
         from spl.memo.instructions import create_memo
@@ -291,15 +437,15 @@ class SolanaLedger:
             transfer_checked(TransferCheckedParams(
                 program_id=TOKEN_PROGRAM_ID, source=self.token_account(source_owner or authority), mint=mint,
                 dest=self.token_account(recipient), owner=auth, amount=round(amount * 10 ** USDC_DECIMALS),
-                decimals=USDC_DECIMALS)),
+                decimals=USDC_DECIMALS, signers=[self.pubkey(n) for n in signers or []])),
         ]
         if memo:
-            ixs.append(create_memo(MemoParams(program_id=MEMO_PROGRAM_ID, signer=auth, message=memo.encode()[:500])))
+            memo_signer = self.pubkey(signers[0]) if signers else auth
+            ixs.append(create_memo(MemoParams(program_id=MEMO_PROGRAM_ID, signer=memo_signer,
+                                              message=memo.encode()[:500])))
         return ixs
 
     def _submit(self, ixs: list, signer_names: list[str]) -> str:
-        from solders.hash import Hash
-        from solders.message import Message
         from solders.transaction import Transaction
 
         for n in signer_names:
@@ -311,24 +457,32 @@ class SolanaLedger:
             kp = self.keys.keypair(n)
             if kp.pubkey() not in [k.pubkey() for k in signers]:
                 signers.append(kp)
-        # Identical instructions under the same blockhash make an identical transaction, which the
-        # cluster drops as a duplicate (e.g. the same purchase twice in a row). Wait for a new blockhash.
+        msg = self._message(ixs)
+        tx = Transaction(signers, msg, msg.recent_blockhash)
+        sig = self.rpc("sendTransaction", [base64.b64encode(bytes(tx)).decode(),
+                                           {"encoding": "base64", "preflightCommitment": "confirmed"}])
+        self._confirm(sig)
+        return sig
+
+    def _message(self, ixs: list):
+        """A message under a fresh blockhash. Identical instructions under the same blockhash make an
+        identical transaction, which the cluster drops as a duplicate (e.g. the same purchase twice in
+        a row), so wait for a new blockhash if needed."""
+        from solders.hash import Hash
+        from solders.message import Message
+        payer = self.pubkey(self.fee_payer)
         deadline = time.monotonic() + self.confirm_timeout
         while True:
             blockhash = Hash.from_string(
                 self.rpc("getLatestBlockhash", [{"commitment": "confirmed"}])["value"]["blockhash"])
-            msg = Message.new_with_blockhash(ixs, payer.pubkey(), blockhash)
+            msg = Message.new_with_blockhash(ixs, payer, blockhash)
             if bytes(msg) not in self.sent_messages:
                 break
             if time.monotonic() > deadline:
                 raise RpcError("no fresh blockhash for a repeated transaction")
             time.sleep(max(self.poll, 0.4))
         self.sent_messages.add(bytes(msg))
-        tx = Transaction(signers, msg, blockhash)
-        sig = self.rpc("sendTransaction", [base64.b64encode(bytes(tx)).decode(),
-                                           {"encoding": "base64", "preflightCommitment": "confirmed"}])
-        self._confirm(sig)
-        return sig
+        return msg
 
     def _confirm(self, sig: str) -> None:
         deadline = time.monotonic() + self.confirm_timeout

@@ -10,7 +10,9 @@ def test_episodes_record_steps_with_guard_decisions():
     ep = next(e for e in run.episodes if e.attack == "poisoned_website" and e.mutation == "data_smuggle")
     tools = [s["tool"] for s in ep.steps]
     assert tools[0] == "read_memory" and tools[-1] == "final"
-    assert all(set(s) == {"tool", "args", "result", "blocked_reason"} for s in ep.steps)
+    assert all(set(s) == {"tool", "args", "result", "untrusted", "blocked_reason"} for s in ep.steps)
+    assert [s["untrusted"] for s in ep.steps if s["tool"] in ("browse", "token_info")] == [True, True]
+    assert not any(s["untrusted"] for s in ep.steps if s["tool"] in ("read_memory", "swap", "final"))
     pay = next(s for s in ep.steps if s["tool"] == "pay")
     assert pay["args"]["recipient"] == "attacker_wallet"
     assert pay["result"].startswith("blocked by policy") and "allowlist" in pay["blocked_reason"]
@@ -41,7 +43,7 @@ def test_two_matrices_in_the_same_second_get_separate_folders(tmp_path):
     assert a != b and a.exists() and b.exists()
 
 
-def test_run_is_agent_slash_preset_in_results_and_traces(tmp_path):
+def test_repeated_pairs_get_distinct_run_keys(tmp_path):
     cli.main(["matrix", "--models", "naive", "--guards", "none,caps,none", "--max-mutations", "1",
               "--out", "", "--runs-dir", str(tmp_path)])
     [run_dir] = list(tmp_path.iterdir())
@@ -51,5 +53,20 @@ def test_run_is_agent_slash_preset_in_results_and_traces(tmp_path):
     lines = [json.loads(l) for l in (run_dir / "traces.jsonl").read_text().splitlines()]
     for r in results:   # every row's episodes are findable by its run id, and only by it
         assert sum(l["run"] == r["run"] for l in lines) == r["episodes"]
-    assert cli.run_id("openai:meta-llama/llama-3.1-8b-instruct", "recommended") == \
+    assert cli.run_key("openai:meta-llama/llama-3.1-8b-instruct", "recommended") == \
         "openai:meta-llama/llama-3.1-8b-instruct/recommended"
+
+
+def test_run_key_joins_each_results_row_to_its_traces(tmp_path):
+    cli.main(["matrix", "--models", "naive", "--guards", "none,caps,recommended", "--max-mutations", "1",
+              "--out", str(tmp_path / "r.json"), "--runs-dir", str(tmp_path / "runs")])
+    [run_dir] = list((tmp_path / "runs").iterdir())
+    results = json.loads((run_dir / "results.json").read_text())
+    lines = [json.loads(l) for l in (run_dir / "traces.jsonl").read_text().splitlines()]
+    assert [r["run"] for r in results] == ["naive/none", "naive/caps", "naive/recommended"]
+    for r in results:
+        mine = [l for l in lines if l["run"] == r["run"]]
+        assert r["run"] == f"{r['agent']}/{r['preset']}"
+        assert len(mine) == r["episodes"]                        # every episode lands under its own row
+        assert (sum(l["stolen"] for l in mine) > 0) == (r["p_compromise"] > 0)
+    assert all(isinstance(l["run"], str) for l in lines)       # never a bare index (0 is falsy in the viewer)

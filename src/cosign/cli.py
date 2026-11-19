@@ -103,18 +103,18 @@ def cmd_test(args) -> int:
     return 0
 
 
-def run_id(agent: str, preset: str, taken: set[str] | None = None) -> str:
-    """'<agent>/<preset>', the key that joins a results.json row to its traces.jsonl lines.
-    A repeat of the same pair in one matrix gets '#2', '#3', ..."""
-    rid, n = f"{agent}/{preset}", 2
-    while taken is not None and rid in taken:
-        rid, n = f"{agent}/{preset}#{n}", n + 1
-    return rid
+def run_key(agent: str, preset: str, taken: set[str] | None = None) -> str:
+    """Joins a results row to its traces: "<agent>/<preset>", e.g. "naive/recommended".
+    A repeat of the same pair in one matrix (pass the keys so far as `taken`) gets "#2", "#3", ..."""
+    key, n = f"{agent}/{preset}", 2
+    while taken is not None and key in taken:
+        key, n = f"{agent}/{preset}#{n}", n + 1
+    return key
 
 
-def trace_lines(rid: str, run) -> list[dict]:
+def trace_lines(key: str, run) -> list[dict]:
     """One record per episode (benign first, then attacked), for runs/<ts>/traces.jsonl."""
-    return [{"run": rid, "task": e.task, "attack": e.attack, "mutation": e.mutation, "trial": e.trial,
+    return [{"run": key, "task": e.task, "attack": e.attack, "mutation": e.mutation, "trial": e.trial,
              "stolen": e.stolen, "task_ok": e.task_ok, "error": e.error, "steps": e.steps}
             for e in run.benign + run.episodes]
 
@@ -158,12 +158,13 @@ def cmd_matrix(args) -> int:
                 print(f"warn {spec} / {g}: {errs}/{total} episodes hit API errors; "
                       f"first: {next(e.error for e in run.benign + run.episodes if e.error)}", file=sys.stderr)
             rows.append((spec, g, r))
-            rid = run_id(spec, g, {x["run"] for x in results})
-            results.append({"run": rid, "agent": spec, "guards": run.guard, "preset": g, "trials": args.trials,
+            key = run_key(spec, g, {x["run"] for x in results})
+            results.append({"run": key, "agent": spec, "guards": run.guard, "preset": g,
+                            "trials": args.trials,
                             "mutations": run.mutations, "episodes": len(run.episodes) + len(run.benign),
                             **asdict(r)})
             with open(run_dir / "traces.jsonl", "a") as f:   # written as each run finishes
-                for line in trace_lines(rid, run):
+                for line in trace_lines(key, run):
                     f.write(json.dumps(line) + "\n")
             (run_dir / "results.json").write_text(json.dumps(results, indent=2))
             print(f"done {spec:<32} {g:<12} score={r.score:<3} limit={r.limit}", file=sys.stderr)
@@ -265,8 +266,11 @@ def cmd_grant(args) -> int:
 def cmd_demo(args) -> int:
     import os
     from pathlib import Path
-    from .demo import AGENT, SubprocessWatcher, run_demo
+    from .demo import AGENT, SubprocessWatcher, run_demo, run_guarded_demo
     from .solana_ledger import SolanaLedger
+    if args.guarded:
+        return run_guarded_demo(SolanaLedger.from_env(), treasury=args.treasury, cosigner=args.cosigner,
+                                min_usdc=args.min_usdc, guard_url=args.guard_url, run_id=args.run_id)
     if not os.environ.get("QUICKNODE_WSS_URL"):
         raise SystemExit("set QUICKNODE_WSS_URL (your endpoint's wss:// URL) for the outflow watcher")
     ledger = SolanaLedger.from_env()  # refuses anything but devnet
@@ -350,6 +354,38 @@ def cmd_doctor(args) -> int:
     return doctor(guard_url=args.guard_url)
 
 
+def cmd_vault(args) -> int:
+    from .solana_ledger import TREASURY, SolanaLedger
+    ledger = SolanaLedger.from_env()
+    ledger.fee_payer = TREASURY
+    if args.action == "create":
+        v = ledger.create_multisig_vault(args.agent, args.cosigner)
+        print(f"vault for {args.agent}: 2-of-2 SPL multisig ({args.agent} + {args.cosigner})"
+              + ("" if v["created"] else ", already existed"))
+        print(f"  agent          {ledger.pubkey(args.agent)}")
+        print(f"  cosigner       {ledger.pubkey(args.cosigner)}")
+        print(f"  multisig       {v['multisig']}")
+        print(f"  token account  {v['token_account']}  ({v['balance']:g} USDC)")
+        if v.get("signature"):
+            print(f"  https://explorer.solana.com/tx/{v['signature']}?cluster=devnet")
+    else:
+        bal = ledger.fund_vault(args.agent, args.usdc)
+        print(f"vault for {args.agent} holds {bal:g} USDC  ({ledger.multisig_vault(args.agent)['token_account']})")
+    return 0
+
+
+def cmd_guard(args) -> int:
+    import uvicorn  # pip install -e .[api,solana]
+    from .attest import load_key
+    from .guard_service import Cosigner, create_app, runs_lookup
+    from .solana_ledger import SolanaLedger
+    ledger = SolanaLedger.from_env()
+    cos = Cosigner(ledger, args.cosigner, load_key(), runs_lookup(args.runs_dir), args.log, args.allow)
+    print(f"cosign guard: cosigner {cos.pubkey}, policies from {args.runs_dir}/, log {args.log}", file=sys.stderr)
+    uvicorn.run(create_app(cos), host=args.host, port=args.port)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="cosign")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -399,6 +435,11 @@ def main(argv: list[str] | None = None) -> int:
     dm.add_argument("--out", default="cosign-report.html")
     dm.add_argument("--timeout", type=float, default=90.0, help="seconds to wait for the watcher / log")
     dm.add_argument("--no-open", action="store_true")
+    dm.add_argument("--guarded", action="store_true",
+                    help="single-signer wallet vs 2-of-2 vault with cosign guard (no watcher or report)")
+    dm.add_argument("--cosigner", default="cosigner", help="--guarded: cosigner keypair name")
+    dm.add_argument("--guard-url", default=None, help="--guarded: a running `cosign guard serve` (default: in-process)")
+    dm.add_argument("--run-id", default="naive/recommended", help="--guarded: run whose policy the guard enforces")
     dm.set_defaults(fn=cmd_demo)
 
     at = sub.add_parser("attest", help="write an ed25519-signed score/limit attestation for one run")
@@ -434,6 +475,28 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
     sv.set_defaults(fn=cmd_serve)
+
+    va = sub.add_parser("vault", help="devnet 2-of-2 vault: SPL multisig (agent + cosigner) owning a USDC account")
+    vsub = va.add_subparsers(dest="action", required=True)
+    vc = vsub.add_parser("create", help="create the multisig and its USDC token account, print the addresses")
+    vc.add_argument("--agent", required=True, help="agent keypair name")
+    vc.add_argument("--cosigner", required=True, help="cosigner keypair name (the one cosign guard holds)")
+    vfund = vsub.add_parser("fund", help="top the vault up to --usdc from the treasury keypair")
+    vfund.add_argument("--agent", default="agent_wallet")
+    vfund.add_argument("--usdc", type=float, required=True)
+    va.set_defaults(fn=cmd_vault)
+
+    gd = sub.add_parser("guard", help="cosigner for 2-of-2 vaults: refuses transfers outside the earned policy")
+    gsub = gd.add_subparsers(dest="action", required=True)
+    gs = gsub.add_parser("serve", help="POST /v1/cosign: check an agent-signed transfer, cosign and submit or refuse")
+    gs.add_argument("--cosigner", default="cosigner", help="keypair name of the cosigner (a vault member)")
+    gs.add_argument("--runs-dir", default="runs", help="crash-test runs the policies come from")
+    gs.add_argument("--log", default="logs/guard.log")
+    gs.add_argument("--allow", action="append", default=[], metavar="NAME|ADDRESS",
+                    help="recipients a tainted episode may pay when the policy has no allowlist (repeatable)")
+    gs.add_argument("--host", default="127.0.0.1")
+    gs.add_argument("--port", type=int, default=8100)
+    gd.set_defaults(fn=cmd_guard)
 
     args = ap.parse_args(argv)
     return args.fn(args)
