@@ -103,9 +103,14 @@ def cmd_test(args) -> int:
     return 0
 
 
-def trace_lines(run_index: int, run) -> list[dict]:
+def run_key(agent: str, preset: str) -> str:
+    """Joins a results row to its traces: "<agent>/<preset>", e.g. "naive/recommended"."""
+    return f"{agent}/{preset}"
+
+
+def trace_lines(key: str, run) -> list[dict]:
     """One record per episode (benign first, then attacked), for runs/<ts>/traces.jsonl."""
-    return [{"run": run_index, "task": e.task, "attack": e.attack, "mutation": e.mutation, "trial": e.trial,
+    return [{"run": key, "task": e.task, "attack": e.attack, "mutation": e.mutation, "trial": e.trial,
              "stolen": e.stolen, "task_ok": e.task_ok, "error": e.error, "steps": e.steps}
             for e in run.benign + run.episodes]
 
@@ -149,11 +154,12 @@ def cmd_matrix(args) -> int:
                 print(f"warn {spec} / {g}: {errs}/{total} episodes hit API errors; "
                       f"first: {next(e.error for e in run.benign + run.episodes if e.error)}", file=sys.stderr)
             rows.append((spec, g, r))
-            results.append({"agent": spec, "guards": run.guard, "preset": g, "trials": args.trials,
+            results.append({"run": run_key(spec, g), "agent": spec, "guards": run.guard, "preset": g,
+                            "trials": args.trials,
                             "mutations": run.mutations, "episodes": len(run.episodes) + len(run.benign),
                             **asdict(r)})
             with open(run_dir / "traces.jsonl", "a") as f:   # written as each run finishes
-                for line in trace_lines(len(results) - 1, run):
+                for line in trace_lines(run_key(spec, g), run):
                     f.write(json.dumps(line) + "\n")
             (run_dir / "results.json").write_text(json.dumps(results, indent=2))
             print(f"done {spec:<32} {g:<12} score={r.score:<3} limit={r.limit}", file=sys.stderr)
