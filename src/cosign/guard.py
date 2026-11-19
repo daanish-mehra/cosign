@@ -20,6 +20,7 @@ class GuardConfig:
     confirm_above: float | None = None     # payments above this to unknown recipients need a human (denied in tests)
     quarantine: bool = False               # untrusted text is reduced to structured data before the model sees it
     verify_memory: bool = False            # unsigned memory entries are dropped
+    max_slippage_bps: float | None = None  # swaps with a looser slippage tolerance are refused
 
     @classmethod
     def none(cls) -> "GuardConfig":
@@ -38,6 +39,7 @@ class GuardConfig:
         if self.confirm_above is not None: on.append(f"confirm_above={self.confirm_above}")
         if self.quarantine: on.append("quarantine")
         if self.verify_memory: on.append("verify_memory")
+        if self.max_slippage_bps is not None: on.append(f"max_slippage_bps={self.max_slippage_bps:g}")
         return on or ["none"]
 
 
@@ -59,13 +61,15 @@ class Guard:
             self.spent += amount
         return res
 
-    def swap(self, symbol: str, usdc: float) -> ToolResult:
-        from .sandbox import DEX
-        reason = self._check(DEX, usdc)
+    def swap(self, symbol: str, usdc: float, slippage_bps: float = 50) -> ToolResult:
+        """Checked as a payment to the token's pool (a scam token's pool is its deployer)."""
+        reason = self._check(self.env.pool_of(symbol), usdc)
+        if not reason and self.cfg.max_slippage_bps is not None and slippage_bps > self.cfg.max_slippage_bps:
+            reason = f"slippage {slippage_bps:g} bps over cap {self.cfg.max_slippage_bps:g}"
         if reason:
             self.blocked.append(f"swap {usdc}: {reason}")
             return ToolResult(f"blocked by policy: {reason}")
-        res = self.env.raw_swap(symbol, usdc)
+        res = self.env.raw_swap(symbol, usdc, slippage_bps)
         if res.text.startswith("swapped"):
             self.spent += usdc
         return res
@@ -79,6 +83,41 @@ class Guard:
             return ToolResult(f"blocked by policy: {reason}")
         res = self.env.raw_approve(spender, amount)
         if res.text.startswith("approved"):
+            self.spent += amount
+        return res
+
+    def set_authority(self, new_authority: str) -> ToolResult:
+        """Handing over the token account = paying out the whole balance."""
+        at_risk = self.env.ledger.balance(self.env.agent)
+        reason = self._check(new_authority, at_risk)
+        if reason:
+            self.blocked.append(f"set_authority to {new_authority}: {reason}")
+            return ToolResult(f"blocked by policy: {reason}")
+        res = self.env.raw_set_authority(new_authority)
+        self.spent += at_risk
+        return res
+
+    def schedule(self, recipient: str, amount: float, every_days: float = 30) -> ToolResult:
+        """A recurring payment is checked as its full total over the horizon, not one instalment."""
+        from .sandbox import recurring_total
+        total = recurring_total(amount, every_days) if amount > 0 and every_days > 0 else amount
+        reason = self._check(recipient, total)
+        if reason:
+            self.blocked.append(f"schedule {amount:g} every {every_days:g}d to {recipient}: {reason}")
+            return ToolResult(f"blocked by policy: {reason}")
+        res = self.env.raw_schedule(recipient, amount, every_days)
+        if res.text.startswith("scheduled"):
+            self.spent += total
+        return res
+
+    def bridge(self, recipient: str, amount: float, chain: str = "ethereum") -> ToolResult:
+        """Checked against the destination address, not the bridge contract."""
+        reason = self._check(recipient, amount)
+        if reason:
+            self.blocked.append(f"bridge {amount:g} to {recipient}: {reason}")
+            return ToolResult(f"blocked by policy: {reason}")
+        res = self.env.raw_bridge(recipient, amount, chain)
+        if res.text.startswith("bridged"):
             self.spent += amount
         return res
 

@@ -67,8 +67,12 @@ class Agent:
             if name == "read_inbox": return g.filter(e.read_inbox())
             if name == "history": return g.filter(e.history())
             if name == "pay": return g.pay(args["recipient"], float(args["amount"]), args.get("memo", ""))
-            if name == "swap": return g.swap(args["symbol"], float(args["usdc"]))
+            if name == "swap": return g.swap(args["symbol"], float(args["usdc"]), float(args.get("slippage_bps", 50)))
             if name == "approve": return g.approve(args["spender"], parse_amount(args["amount"]))
+            if name == "set_authority": return g.set_authority(args["new_authority"])
+            if name == "schedule_payment":
+                return g.schedule(args["recipient"], float(args["amount"]), float(args.get("every_days", 30)))
+            if name == "bridge": return g.bridge(args["recipient"], float(args["amount"]), args.get("chain", "ethereum"))
         except (KeyError, TypeError, ValueError) as ex:
             return ToolResult(f"bad arguments for {name}: {ex}")
         return ToolResult(f"unknown tool {name}")
