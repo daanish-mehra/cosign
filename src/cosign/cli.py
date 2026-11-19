@@ -1,7 +1,8 @@
 """Cosign CLI.
 
-cosign test   --agent naive|llm [--provider anthropic|openai] [--model M] --guards PRESET [--ledger sim|devnet]
-cosign matrix --models naive,anthropic:MODEL,openai:MODEL,adapter:elizaos --guards none,caps,quarantine,recommended
+cosign test   --agent naive|llm [--provider anthropic|openai] [--model M] --guards PRESET [--ledger sim|devnet] [--techniques core|full]
+cosign matrix --models naive,anthropic:MODEL,openai:MODEL,adapter:elizaos --guards none,caps,quarantine,recommended [--techniques core|full]
+cosign techniques [--suite core|full]
 cosign attest --results R --run N          cosign verify FILE [--pubkey K]
 cosign policy --results R --run N [--format json|privy|turnkey]
 cosign serve  [--runs-dir runs]           cosign doctor [--guard-url URL]
@@ -89,17 +90,38 @@ def cmd_test(args) -> int:
     cfg = guard_preset(args.guards)
     ledgers = ledger_factory(args.ledger)
     run = crash_test(cfg, brain_factory(spec), trials=args.trials, max_mutations=args.max_mutations,
-                     ledgers=ledgers)
+                     ledgers=ledgers, techniques=args.techniques)
     if ledgers is not None:
         swept = ledgers().sweep()
         print(f"devnet: swept {swept:g} USDC back to the treasury", file=sys.stderr)
     r = rate(run, cfg)
     if args.json:
         json.dump({"agent": spec, "guards": run.guard, "trials": run.trials, "mutations": run.mutations,
-                   **asdict(r)}, sys.stdout, indent=2)
+                   "techniques": run.techniques, **asdict(r)}, sys.stdout, indent=2)
         print()
     else:
         _print_report(spec, run.guard, r)
+    return 0
+
+
+def techniques_arg(value: str) -> str:
+    """argparse type for --techniques: fail before any episode runs on a typo."""
+    from .attacks import select_techniques
+    try:
+        select_techniques(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+    return value
+
+
+def cmd_techniques(args) -> int:
+    from .attacks import select_techniques
+    techs = select_techniques(args.suite)
+    print(f"{'id':<46} {'channel':<16} {'payload':<17} {'obfuscation':<16} tasks")
+    for t in techs:
+        print(f"{t.id:<46} {t.channel:<16} {t.payload:<17} {t.obfuscation:<16} {','.join(t.targets)}")
+    print(f"\n{len(techs)} techniques ({sum(t.core for t in techs)} core). "
+          "Run a set with --techniques core|full|<id>,<id>")
     return 0
 
 
@@ -143,7 +165,8 @@ def cmd_matrix(args) -> int:
         for g in [p.strip() for p in args.guards.split(",") if p.strip()]:
             cfg = guard_preset(g)
             try:
-                run = crash_test(cfg, brains, trials=args.trials, max_mutations=args.max_mutations)
+                run = crash_test(cfg, brains, trials=args.trials, max_mutations=args.max_mutations,
+                                 techniques=args.techniques)
             except Exception as e:  # API errors, rate limits
                 print(f"error {spec} / {g}: {e}", file=sys.stderr)
                 continue
@@ -161,7 +184,8 @@ def cmd_matrix(args) -> int:
             key = run_key(spec, g, {x["run"] for x in results})
             results.append({"run": key, "agent": spec, "guards": run.guard, "preset": g,
                             "trials": args.trials,
-                            "mutations": run.mutations, "episodes": len(run.episodes) + len(run.benign),
+                            "mutations": run.mutations, "techniques": run.techniques,
+                            "episodes": len(run.episodes) + len(run.benign),
                             **asdict(r)})
             with open(run_dir / "traces.jsonl", "a") as f:   # written as each run finishes
                 for line in trace_lines(key, run):
@@ -400,6 +424,8 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--ledger", default="sim", choices=["sim", "devnet"],
                    help="sim = in-memory; devnet = real Solana devnet USDC (see cosign.solana_ledger)")
     t.add_argument("--json", action="store_true")
+    t.add_argument("--techniques", default="core", type=techniques_arg,
+                   help="core (9 families, default), full (every technique), or comma-separated ids")
     t.set_defaults(fn=cmd_test)
 
     m = sub.add_parser("matrix", help="every model x every guard preset")
@@ -409,6 +435,12 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--max-mutations", type=int, default=None)
     m.add_argument("--out", default="results.json")
     m.add_argument("--runs-dir", default="runs", help="each matrix writes <runs-dir>/<UTC timestamp>/")
+    m.add_argument("--techniques", default="core", type=techniques_arg,
+                   help="core (9 families, default), full (every technique), or comma-separated ids")
+
+    tq = sub.add_parser("techniques", help="list the attack techniques and their ids")
+    tq.add_argument("--suite", default="full", choices=["core", "full"])
+    tq.set_defaults(fn=cmd_techniques)
     m.set_defaults(fn=cmd_matrix)
 
     rp = sub.add_parser("report", help="build the dashboard page from results.json")
