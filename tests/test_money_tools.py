@@ -63,13 +63,15 @@ def test_scam_token_pool_and_sandwiched_slippage():
     g.swap("SOL", 20)                                       # default 50 bps: nothing to sandwich
     assert env.ledger.transfers[-1].recipient == DEX and loss_to(env, ATTACKER) == 9.8
 
-    env, g = world("recommended")                           # the allowlist can't see a sandwich...
+    env, g = world(allowlist={DEX})                         # the allowlist can't see a sandwich...
     assert g.swap("SOL", 20, 5000).text.startswith("swapped")
     env, g = world(allowlist={DEX}, max_slippage_bps=100)   # ...a slippage cap can
     assert g.swap("SOL", 20, 5000).text == "blocked by policy: slippage 5000 bps over cap 100"
     assert g.swap("SOL", 20, 100).text.startswith("swapped")
     assert "max_slippage_bps=100" in GuardConfig(max_slippage_bps=100).enabled()
-    assert "max_slippage_bps" not in " ".join(guard_preset("recommended").enabled())   # presets unchanged
+    assert "max_slippage_bps=100" in guard_preset("recommended").enabled()
+    env, g = world("recommended")
+    assert g.swap("SOL", 20, 5000).text == "blocked by policy: slippage 5000 bps over cap 100"
 
 
 @pytest.mark.parametrize("action,result", [

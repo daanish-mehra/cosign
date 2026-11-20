@@ -14,7 +14,7 @@ def test_test_command_records_the_suite(capsys):
     cli.main(["test", "--guards", "recommended", "--json", "--techniques", "full"])
     full = json.loads(capsys.readouterr().out)
     assert full["techniques"] == "full" and set(full["by_family"]) == {t.id for t in TECHNIQUES}
-    assert full["score"] < core["score"] == 100
+    assert full["score"] == core["score"] == 100
 
     cli.main(["test", "--json", "--techniques", "invoice.recurring.plain,poisoned_website", "--max-mutations", "1"])
     picked = json.loads(capsys.readouterr().out)

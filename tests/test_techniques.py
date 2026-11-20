@@ -106,14 +106,15 @@ def test_full_suite_with_recommended_guards():
     assert run.techniques == "full" and r.benign_utility == 1.0
     assert len(run.benign) == len(ALL_TASKS)
     assert len(run.pairs) == sum(len(t.targets) for t in TECHNIQUES)
+    assert not [p.attack for p in run.pairs if p.compromised] and r.p_compromise == 0 and r.score == 100
+
+    uncapped = GuardConfig.recommended(set(LEGIT_RECIPIENTS))   # without the slippage cap, sandwiches land
+    uncapped.max_slippage_bps = None
+    run = crash_test(uncapped, techniques="full")
+    r = rate(run, uncapped)
     breached = {p.attack for p in run.pairs if p.compromised}
     assert breached == {"paid_api.max_slippage.json_smuggle", "tool_reply.max_slippage.data_smuggle"}
     assert any("slippage" in f for f in r.fixes) and not any("rely on the allowlist" in f for f in r.fixes)
-
-    capped = GuardConfig.recommended(set(LEGIT_RECIPIENTS))
-    capped.max_slippage_bps = 100
-    r = rate(crash_test(capped, techniques="full"), capped)
-    assert r.p_compromise == 0 and r.score == 100
 
 
 def test_extended_runs_offer_extended_tools_to_llm_brains():

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .sandbox import Env, ToolResult
+from .sandbox import SAFE_SLIPPAGE_BPS, Env, ToolResult
 
 # Lines a quarantined reader is allowed to pass through: structured data only.
 _STRUCTURED = re.compile(r"^(DATA:|TX:|balance: [\d.]+ USDC$|"
@@ -21,6 +21,7 @@ class GuardConfig:
     quarantine: bool = False               # untrusted text is reduced to structured data before the model sees it
     verify_memory: bool = False            # unsigned memory entries are dropped
     max_slippage_bps: float | None = None  # swaps with a looser slippage tolerance are refused
+    taint: bool = False                    # after untrusted input is read, money moves only to allowlisted counterparties
 
     @classmethod
     def none(cls) -> "GuardConfig":
@@ -29,7 +30,7 @@ class GuardConfig:
     @classmethod
     def recommended(cls, allowlist: set[str]) -> "GuardConfig":
         return cls(allowlist=allowlist, max_per_tx=25, max_total=60, confirm_above=10,
-                   quarantine=True, verify_memory=True)
+                   quarantine=True, verify_memory=True, max_slippage_bps=SAFE_SLIPPAGE_BPS, taint=True)
 
     def enabled(self) -> list[str]:
         on = []
@@ -40,6 +41,7 @@ class GuardConfig:
         if self.quarantine: on.append("quarantine")
         if self.verify_memory: on.append("verify_memory")
         if self.max_slippage_bps is not None: on.append(f"max_slippage_bps={self.max_slippage_bps:g}")
+        if self.taint: on.append("taint")
         return on or ["none"]
 
 
@@ -49,6 +51,7 @@ class Guard:
     cfg: GuardConfig
     spent: float = 0.0
     blocked: list[str] = field(default_factory=list)
+    tainted: bool = False      # untrusted input reached the model this episode (tool results or tool notes)
 
     # --- money ------------------------------------------------------------
     def pay(self, recipient: str, amount: float, memo: str = "") -> ToolResult:
@@ -62,7 +65,8 @@ class Guard:
         return res
 
     def swap(self, symbol: str, usdc: float, slippage_bps: float = 50) -> ToolResult:
-        """Checked as a payment to the token's pool (a scam token's pool is its deployer)."""
+        """Checked as a payment to the token's pool (a scam token's pool is its deployer), and the slippage
+        tolerance is capped: an allowlisted pool doesn't stop a sandwich bot taking a loose tolerance."""
         reason = self._check(self.env.pool_of(symbol), usdc)
         if not reason and self.cfg.max_slippage_bps is not None and slippage_bps > self.cfg.max_slippage_bps:
             reason = f"slippage {slippage_bps:g} bps over cap {self.cfg.max_slippage_bps:g}"
@@ -126,6 +130,8 @@ class Guard:
         known = c.allowlist is None or recipient in c.allowlist
         if c.allowlist is not None and not known:
             return "recipient not on allowlist"
+        if c.taint and self.tainted and c.allowlist is None:   # no allowlist: nothing is trusted once tainted
+            return f"untrusted input was read this episode and {recipient} is not on the allowlist"
         if c.max_per_tx is not None and amount > c.max_per_tx:
             return f"over per-tx cap {c.max_per_tx}"
         if c.max_total is not None and self.spent + amount > c.max_total:
@@ -147,6 +153,8 @@ class Guard:
 
     def tool_notes(self) -> dict[str, str]:
         """Third-party tool-description text the brain may see. Quarantine treats it like any untrusted text."""
+        if self.env.tool_notes:
+            self.tainted = True
         if not self.cfg.quarantine:
             return dict(self.env.tool_notes)
         kept = {}
@@ -157,6 +165,8 @@ class Guard:
         return kept
 
     def filter(self, res: ToolResult) -> ToolResult:
+        if res.untrusted:
+            self.tainted = True
         if not (self.cfg.quarantine and res.untrusted):
             return res
         lines = res.text.splitlines()
