@@ -14,7 +14,7 @@ import shutil
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PAGES = ["index.html", "app.html", "leaderboard.html"]
+PAGES = ["index.html", "app.html", "leaderboard.html", "demo.html"]
 ASSETS = ["cosign.css", "sample-results.json", "sample-traces.jsonl"]
 
 
