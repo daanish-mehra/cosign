@@ -3,6 +3,7 @@
 cosign test   --agent naive|llm [--provider anthropic|openai] [--model M] --guards PRESET [--ledger sim|devnet] [--techniques core|full]
 cosign matrix --models naive,anthropic:MODEL,openai:MODEL,adapter:elizaos --guards none,caps,quarantine,recommended [--techniques core|full]
 cosign techniques [--suite core|full]
+cosign matrix --suite craibench --limit 50  (after `cosign craibench install`; `cosign craibench cases` lists them)
 cosign attest --results R --run N          cosign verify FILE [--pubkey K]
 cosign policy --results R --run N [--format json|privy|turnkey]
 cosign serve  [--runs-dir runs]           cosign doctor [--guard-url URL]
@@ -114,6 +115,26 @@ def techniques_arg(value: str) -> str:
     return value
 
 
+def cmd_craibench_install(args) -> int:
+    from .craibench.install import install
+    py = install(args.venv, args.python)
+    print(f"CrAIBench installed: {py}\nrun: cosign matrix --suite craibench --limit 50")
+    return 0
+
+
+def cmd_craibench_cases(args) -> int:
+    from .craibench.runner import open_bridge, runnable_cases
+    bridge = open_bridge()
+    try:
+        cases = runnable_cases(bridge, args.limit or None)
+    finally:
+        bridge.close()
+    for c in cases:
+        print(c.id)
+    print(f"{len(cases)} cases", file=sys.stderr)
+    return 0
+
+
 def cmd_techniques(args) -> int:
     from .attacks import select_techniques
     techs = select_techniques(args.suite)
@@ -155,19 +176,45 @@ def new_run_dir(root: str) -> "Path":
 
 def cmd_matrix(args) -> int:
     rows, results = [], []
+    bridge, extra = None, {}
+    if args.suite == "craibench":
+        if args.techniques != "core":
+            raise SystemExit("--techniques applies to the cosign suite; the craibench suite uses CrAIBench's cases")
+        from .craibench import runner as cb
+        bridge = cb.open_bridge()
+        cases = cb.runnable_cases(bridge, args.limit or None)
+        print(f"craibench: {len(cases)} cases", file=sys.stderr)
+        make_brains = cb.craibench_brains
+        extra = {"cases": len(cases)}
+
+        def run_suite(cfg, brains):
+            return cb.craibench_crash_test(bridge, cases, cfg, brains, trials=args.trials)
+    else:
+        make_brains = brain_factory
+
+        def run_suite(cfg, brains):
+            return crash_test(cfg, brains, trials=args.trials, max_mutations=args.max_mutations,
+                              techniques=args.techniques)
+    try:
+        return _matrix(args, rows, results, make_brains, run_suite, extra)
+    finally:
+        if bridge is not None:
+            bridge.close()
+
+
+def _matrix(args, rows, results, make_brains, run_suite, extra) -> int:
     run_dir = new_run_dir(args.runs_dir)
     (run_dir / "traces.jsonl").touch()
     for spec in [s.strip() for s in args.models.split(",") if s.strip()]:
         try:
-            brains = brain_factory(spec)
+            brains = make_brains(spec)
         except (Exception, SystemExit) as e:  # missing key, package or model name
             print(f"skip {spec}: {e}", file=sys.stderr)
             continue
         for g in [p.strip() for p in args.guards.split(",") if p.strip()]:
             cfg = guard_preset(g)
             try:
-                run = crash_test(cfg, brains, trials=args.trials, max_mutations=args.max_mutations,
-                                 techniques=args.techniques)
+                run = run_suite(cfg, brains)
             except Exception as e:  # API errors, rate limits
                 print(f"error {spec} / {g}: {e}", file=sys.stderr)
                 continue
@@ -185,9 +232,9 @@ def cmd_matrix(args) -> int:
             key = run_key(spec, g, {x["run"] for x in results})
             results.append({"run": key, "agent": spec, "guards": run.guard, "preset": g,
                             "trials": args.trials,
-                            "mutations": run.mutations, "techniques": run.techniques,
-                            "episodes": len(run.episodes) + len(run.benign),
-                            **asdict(r)})
+                            "mutations": run.mutations, "techniques": run.techniques, "suite": args.suite,
+                            "episodes": len(run.episodes) + len(run.benign), **extra,
+                            **({"skipped": run.skipped} if run.skipped else {}), **asdict(r)})
             with open(run_dir / "traces.jsonl", "a") as f:   # written as each run finishes
                 for line in trace_lines(key, run):
                     f.write(json.dumps(line) + "\n")
@@ -438,6 +485,20 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--runs-dir", default="runs", help="each matrix writes <runs-dir>/<UTC timestamp>/")
     m.add_argument("--techniques", default="core", type=techniques_arg,
                    help="core (9 families, default), full (every technique), or comma-separated ids")
+
+    m.add_argument("--suite", default="cosign", choices=["cosign", "craibench"],
+                   help="cosign's own tasks and attacks, or CrAIBench's Web3 cases (needs `cosign craibench install`)")
+    m.add_argument("--limit", type=int, default=50, help="--suite craibench: number of cases (0 = all)")
+
+    cb = sub.add_parser("craibench", help="CrAIBench in its own venv: install, or list the cases a matrix would run")
+    cb_sub = cb.add_subparsers(dest="craibench_cmd", required=True)
+    cbi = cb_sub.add_parser("install", help="create the CrAIBench venv (pinned commit, pinned dependencies)")
+    cbi.add_argument("--venv", default=".venv-craibench")
+    cbi.add_argument("--python", default=None, help="a Python 3.10-3.12 to build it with (default: first on PATH)")
+    cbi.set_defaults(fn=cmd_craibench_install)
+    cbc = cb_sub.add_parser("cases", help="print the case ids `cosign matrix --suite craibench` runs")
+    cbc.add_argument("--limit", type=int, default=50, help="0 = all")
+    cbc.set_defaults(fn=cmd_craibench_cases)
 
     tq = sub.add_parser("techniques", help="list the attack techniques and their ids")
     tq.add_argument("--suite", default="full", choices=["core", "full"])
