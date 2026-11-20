@@ -137,7 +137,8 @@ def run_key(agent: str, preset: str, taken: set[str] | None = None) -> str:
 def trace_lines(key: str, run) -> list[dict]:
     """One record per episode (benign first, then attacked), for runs/<ts>/traces.jsonl."""
     return [{"run": key, "task": e.task, "attack": e.attack, "mutation": e.mutation, "trial": e.trial,
-             "stolen": e.stolen, "task_ok": e.task_ok, "error": e.error, "steps": e.steps}
+             "stolen": e.stolen, "task_ok": e.task_ok, "error": e.error, "steps": e.steps,
+             **({"notes": e.notes} if e.notes else {})}
             for e in run.benign + run.episodes]
 
 

@@ -9,6 +9,7 @@ cosign drives the agent; this process owns the CrAIBench environment.
 
 Methods (besides MCP's initialize / tools/list / tools/call):
   craibench/catalog  {suites}                         -> {suite: {user_tasks: {id: prompt}, injection_tasks: {id: goal}}}
+  craibench/injectable {suites, attack}               -> {suite: [user task ids whose correct run reads an injection]}
   craibench/start    {suite, user_task, injection_task|null, attack}
                      -> {prompt, tools, wallet, prices, authorized, injected, canary, user_plan, injection_plan}
   craibench/preview  {name, arguments}                -> {outflows, error}   (dry run on a copy of the environment)
@@ -74,6 +75,20 @@ def catalog(suites: list[str]) -> dict:
         suite = _suite(s)
         out[s] = {"user_tasks": {k: t.PROMPT for k, t in suite.user_tasks.items()},
                   "injection_tasks": {k: t.GOAL for k, t in suite.injection_tasks.items()}}
+    return out
+
+
+def injectable(suites: list[str], attack: str = "important_instructions_no_names") -> dict:
+    out = {}
+    for s in suites:
+        suite, ok = _suite(s), []
+        for tid, task in suite.user_tasks.items():
+            try:
+                if _attack(suite, attack).get_injection_candidates(task):
+                    ok.append(tid)
+            except ValueError:   # "<task> is not injectable"
+                pass
+        out[s] = ok
     return out
 
 
@@ -151,6 +166,9 @@ def handle(method: str, params: dict):
                           for t in STATE.get("tools", [])]}
     if method == "craibench/catalog":
         return catalog(params.get("suites") or ["chain", "crypto_trading", "dao_nft"])
+    if method == "craibench/injectable":
+        return injectable(params.get("suites") or ["chain", "crypto_trading", "dao_nft"],
+                          params.get("attack") or "important_instructions_no_names")
     if method == "craibench/start":
         info = start(**params)
         STATE["tools"] = info["tools"]

@@ -51,15 +51,18 @@ class Case:
         return cls(suite, user, inj)
 
 
-def all_cases(suites: tuple[str, ...] = SUITES) -> list[Case]:
+def all_cases(suites: tuple[str, ...] = SUITES, injectable: dict[str, list[str]] | None = None) -> list[Case]:
+    """Every scripted pair; with `injectable` (from the bridge), only user tasks an attack can reach."""
     return [Case(s, f"user_task_{u}", f"injection_task_{i}")
-            for s in suites for u, injs in sorted(PAIRINGS[s].items()) for i in injs]
+            for s in suites for u, injs in sorted(PAIRINGS[s].items()) for i in injs
+            if injectable is None or f"user_task_{u}" in injectable.get(s, ())]
 
 
-def select_cases(limit: int | None = 50, suites: tuple[str, ...] = SUITES) -> list[Case]:
+def select_cases(limit: int | None = 50, suites: tuple[str, ...] = SUITES,
+                 injectable: dict[str, list[str]] | None = None) -> list[Case]:
     """`limit` cases split evenly across the suites, evenly spaced within each suite so the subset covers
     many user tasks and every injection family. Same input, same cases."""
-    per_suite = {s: all_cases((s,)) for s in suites}
+    per_suite = {s: all_cases((s,), injectable) for s in suites}
     if limit is None or limit >= sum(map(len, per_suite.values())):
         return [c for s in suites for c in per_suite[s]]
     out: list[Case] = []
