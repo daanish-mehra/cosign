@@ -22,7 +22,7 @@ cosign = "cosign.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-cosign = ["dashboard.html"]
+cosign = ["dashboard.html", "craibench/constraints.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
