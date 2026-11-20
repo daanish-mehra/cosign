@@ -16,7 +16,8 @@ Methods (besides MCP's initialize / tools/list / tools/call):
   tools/call         {name, arguments}                -> MCP CallToolResult (runs for real)
   craibench/finish   {output}                         -> {utility, security, outflows}
 
-An outflow is a CrAIBench Transaction the call adds with sender == the wallet's address.
+An outflow is a CrAIBench Transaction the call adds with sender == the wallet's address, plus "via": the tool
+that created it (so cosign can tell a stake or bridge into the user's own position from a payment out).
 """
 
 from __future__ import annotations
@@ -44,9 +45,23 @@ def _txns(env) -> list[dict]:
     return [t.model_dump() for t in env.wallet.transactions]
 
 
-def _outflows(env, since: int) -> list[dict]:
+def _outflows(env, since: int, via: dict[int, str] | str | None = None) -> list[dict]:
+    """New transactions leaving the wallet, each tagged with the tool that made it ("via")."""
     addr = env.wallet.address
-    return [t for t in _txns(env)[since:] if t.get("sender") == addr]
+    out = []
+    for i, t in enumerate(_txns(env)[since:], since):
+        if t.get("sender") == addr:
+            out.append({**t, "via": via if isinstance(via, str) or via is None else via.get(i)})
+    return out
+
+
+def _tracked(env, name: str, args: dict, via: dict[int, str]):
+    """Run a call and remember which tool created each new transaction."""
+    n = len(env.wallet.transactions)
+    res = STATE["runtime"].run_function(env, name, args)
+    for i in range(n, len(env.wallet.transactions)):
+        via[i] = name
+    return res
 
 
 def _calls(calls) -> list[dict]:
@@ -103,12 +118,12 @@ def start(suite: str, user_task: str, injection_task: str | None = None,
     pre = env.model_copy(deep=True)
     STATE.clear()
     STATE.update(suite=s, user=user, inj=inj, env=env, pre=pre, start=len(env.wallet.transactions),
-                 runtime=FunctionsRuntime(s.tools), trace=[])
+                 runtime=FunctionsRuntime(s.tools), trace=[], via={})
 
     gt = user.ground_truth(pre.model_copy(deep=True))
-    scratch = pre.model_copy(deep=True)
+    scratch, scratch_via = pre.model_copy(deep=True), {}
     for c in gt:
-        STATE["runtime"].run_function(scratch, c.function, c.args)
+        _tracked(scratch, c.function, c.args, scratch_via)
     wallet = env.wallet.model_dump()
     feed = getattr(env, "price_feed", None)
     prices = {}
@@ -120,7 +135,7 @@ def start(suite: str, user_task: str, injection_task: str | None = None,
                    "parameters": f.parameters.model_json_schema()} for f in s.tools],
         "wallet": {"address": wallet.get("address"), "balances": wallet.get("balances")},
         "prices": prices,
-        "authorized": _outflows(scratch, STATE["start"]),
+        "authorized": _outflows(scratch, STATE["start"], scratch_via),
         "injected": sorted(injections),
         "canary": inj.GOAL if inj else None,
         "user_plan": _calls(gt),
@@ -132,12 +147,16 @@ def preview(name: str, arguments: dict) -> dict:
     env = STATE["env"].model_copy(deep=True)
     n = len(env.wallet.transactions)
     text, is_error = _run(env, name, arguments)
-    return {"outflows": _outflows(env, n), "error": text if is_error else None}
+    return {"outflows": _outflows(env, n, name), "error": text if is_error else None}
 
 
 def call(name: str, arguments: dict) -> dict:
     from agentdojo.functions_runtime import FunctionCall
-    text, is_error = _run(STATE["env"], name, arguments)
+    env = STATE["env"]
+    n = len(env.wallet.transactions)
+    text, is_error = _run(env, name, arguments)
+    for i in range(n, len(env.wallet.transactions)):
+        STATE["via"][i] = name
     STATE["trace"].append(FunctionCall(function=name, args=arguments))
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
 
@@ -153,7 +172,7 @@ def finish(output: str = "") -> dict:
     utility = check(lambda: s._check_user_task_utility(STATE["user"], output, pre, env, trace))
     security = check(lambda: s._check_injection_task_security(STATE["inj"], output, pre, env, trace)) \
         if STATE["inj"] else False
-    return {"utility": utility, "security": security, "outflows": _outflows(env, STATE["start"])}
+    return {"utility": utility, "security": security, "outflows": _outflows(env, STATE["start"], STATE["via"])}
 
 
 def handle(method: str, params: dict):

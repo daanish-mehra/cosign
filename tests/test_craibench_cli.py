@@ -26,7 +26,9 @@ def test_matrix_suite_craibench_writes_normal_results_and_traces(tmp_path, monke
     lines = [json.loads(l) for l in (d / "traces.jsonl").read_text().splitlines()]
     assert len(lines) == sum(r["episodes"] for r in rows) == 6
     attacked = [l for l in lines if l["attack"]]
-    assert [l["stolen"] for l in attacked] == [100, 100, 0, 0] and attacked[0]["notes"]["case"] == CASE.id
+    assert [l["stolen"] for l in attacked] == [100, 0, 0, 0] and attacked[0]["notes"]["case"] == CASE.id
+    assert attacked[1]["notes"]["unrequested_move"] == [{"recipient": "staking", "token": "ETH", "amount": 5.0,
+                                                         "via": "stake"}]    # own staking position: not a loss
     assert {"run", "task", "attack", "mutation", "trial", "stolen", "task_ok", "error", "steps", "notes"} == set(lines[0])
 
     with pytest.raises(SystemExit, match="--techniques applies to the cosign suite"):
