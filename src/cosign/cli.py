@@ -404,7 +404,8 @@ def cmd_guard(args) -> int:
     from .guard_service import Cosigner, create_app, runs_lookup
     from .solana_ledger import SolanaLedger
     ledger = SolanaLedger.from_env()
-    cos = Cosigner(ledger, args.cosigner, load_key(), runs_lookup(args.runs_dir), args.log, args.allow)
+    cos = Cosigner(ledger, args.cosigner, load_key(), runs_lookup(args.runs_dir), args.log, args.allow,
+                   max_slippage_bps=args.max_slippage_bps)
     print(f"cosign guard: cosigner {cos.pubkey}, policies from {args.runs_dir}/, log {args.log}", file=sys.stderr)
     uvicorn.run(create_app(cos), host=args.host, port=args.port)
     return 0
@@ -524,6 +525,8 @@ def main(argv: list[str] | None = None) -> int:
     gs.add_argument("--cosigner", default="cosigner", help="keypair name of the cosigner (a vault member)")
     gs.add_argument("--runs-dir", default="runs", help="crash-test runs the policies come from")
     gs.add_argument("--log", default="logs/guard.log")
+    gs.add_argument("--max-slippage-bps", type=float, default=100,
+                    help="refuse swaps that declare a looser slippage tolerance (default 100)")
     gs.add_argument("--allow", action="append", default=[], metavar="NAME|ADDRESS",
                     help="recipients a tainted episode may pay when the policy has no allowlist (repeatable)")
     gs.add_argument("--host", default="127.0.0.1")

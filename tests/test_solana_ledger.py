@@ -126,10 +126,31 @@ class FakeDevnet:
                 self.tokens.setdefault(acc[1], 0)
             elif prog == str(TOKEN_PROGRAM_ID):
                 signer = lambda pos: msg.is_signer(ix.accounts[pos])  # noqa: E731
+
+                def authorized(owner, first):                           # owner signs, or m of its multisig do
+                    if owner not in self.multisig:
+                        assert signer(first - 1)
+                        return
+                    m, allowed = self.multisig[owner]
+                    if len({acc[i] for i in range(first, len(acc)) if signer(i) and acc[i] in allowed}) < m:
+                        raise RpcError("custom program error: 0x8 (not enough multisig signers)")
                 if data[0] == 13:                                       # ApproveChecked
-                    src, mint, dlg, owner = acc
-                    assert signer(3) and self.owner[src] == owner and mint == DEVNET_USDC
+                    src, mint, dlg, owner = acc[:4]
+                    authorized(owner, 4)
+                    assert self.owner[src] == owner and mint == DEVNET_USDC
                     self.delegate[src] = (dlg, int.from_bytes(data[1:9], "little"))
+                    continue
+                if data[0] == 4:                                        # Approve
+                    src, dlg, owner = acc[:3]
+                    authorized(owner, 3)
+                    assert self.owner[src] == owner
+                    self.delegate[src] = (dlg, int.from_bytes(data[1:9], "little"))
+                    continue
+                if data[0] == 6:                                        # SetAuthority (account owner)
+                    src, owner = acc[:2]
+                    authorized(owner, 2)
+                    assert self.owner[src] == owner and data[1] == 2 and data[2] == 1
+                    self.owner[src] = str(Pubkey.from_bytes(data[3:35]))
                     continue
                 if data[0] == 5:                                        # Revoke
                     src, owner = acc

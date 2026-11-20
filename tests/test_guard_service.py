@@ -136,7 +136,7 @@ def test_only_usdc_transfer_instructions(world):
                                     lamports=1))
     assert "instruction not allowed" in ask(cos, build(ledger, DEX, 1, extra=[sneak]))["reason"]
     second = ledger._transfer_ixs(ledger.multisig_name(AGENT), ATTACKER, 1, "", signers=[AGENT, COSIGNER])[1]
-    assert "exactly one USDC transfer, found 2" in ask(cos, build(ledger, DEX, 1, extra=[second]))["reason"]
+    assert "exactly one money move, found 2" in ask(cos, build(ledger, DEX, 1, extra=[second]))["reason"]
 
 
 def test_wrong_mint(world):
