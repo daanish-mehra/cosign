@@ -1,10 +1,10 @@
-# Weekly leaderboard: crash-test every model in web/models.txt on the full technique suite,
-# rebuild the site from the results and deploy it to Vercel.
+# Weekly leaderboard: crash-test every model in web/models.txt on the full technique suite, one
+# job per model (4 at a time), then build the site from all their results and deploy it to Vercel.
 #
 # Repo secrets: OPENAI_API_KEY, OPENAI_BASE_URL (an OpenAI-compatible endpoint serving the models),
 # VERCEL_TOKEN. Optional: VERCEL_ORG_ID + VERCEL_PROJECT_ID to deploy to an existing project.
-# The first step fails the run, before anything is installed or any model is called, if a
-# required secret is missing.
+# The first step of the first job fails the run, before anything is installed or any model is
+# called, if a required secret is missing.
 name: leaderboard
 
 on:
@@ -20,15 +20,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  leaderboard:
+  setup:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 5
+    outputs:
+      models: ${{ steps.models.outputs.list }}
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
       - name: Check secrets
         run: |
@@ -44,6 +44,35 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      - name: Read models
+        id: models
+        run: |
+          models=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' web/models.txt | grep -v '^$' \
+                   | awk '{ print (index($0, ":") ? $0 : "openai:" $0) }' \
+                   | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))')
+          if [ "$models" = "[]" ]; then
+            echo "::error::web/models.txt lists no models"
+            exit 1
+          fi
+          echo "list=$models" >> "$GITHUB_OUTPUT"
+          echo "models: $models"
+
+  crash-test:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        model: ${{ fromJSON(needs.setup.outputs.models) }}
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+      MODEL: ${{ matrix.model }}
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -51,33 +80,54 @@ jobs:
       - name: Install
         run: python -m pip install --quiet -e ".[llm]"
 
-      - name: Read models
-        id: models
-        run: |
-          models=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' web/models.txt | grep -v '^$' \
-                   | awk '{ print (index($0, ":") ? $0 : "openai:" $0) }' | paste -sd, -)
-          if [ -z "$models" ]; then
-            echo "::error::web/models.txt lists no models"
-            exit 1
-          fi
-          echo "list=$models" >> "$GITHUB_OUTPUT"
-          echo "models: $models"
+      - name: Artifact name
+        id: slug
+        run: echo "name=results-$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9._-' '-')" >> "$GITHUB_OUTPUT"
 
       - name: Crash test
         run: |
-          cosign matrix --models "${{ steps.models.outputs.list }}" --guards none,recommended \
-            --techniques full --out results-leaderboard.json --runs-dir runs
-
-      - name: Build site
-        run: python web/build.py --results results-leaderboard.json --traces runs/*/traces.jsonl --out site
+          cosign matrix --models "$MODEL" --guards none,recommended \
+            --techniques full --out results.json --runs-dir runs
 
       - uses: actions/upload-artifact@v4
         with:
-          name: leaderboard-results
+          name: ${{ steps.slug.outputs.name }}
           path: |
-            results-leaderboard.json
+            results.json
             runs/
+          if-no-files-found: error
           retention-days: 90
+
+  deploy:
+    needs: [setup, crash-test]
+    if: ${{ !cancelled() && needs.setup.result == 'success' }}   # deploy whichever models finished
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          path: results
+
+      - name: Build site
+        run: |
+          shopt -s nullglob
+          files=(results/*/results.json)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no model produced results"
+            exit 1
+          fi
+          python web/build.py --results "${files[@]}" --traces results/*/runs/*/traces.jsonl --out site
 
       - name: Deploy to Vercel
         run: |
