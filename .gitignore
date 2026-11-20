@@ -12,3 +12,4 @@ __pycache__/
 cosign-report.html
 results.json
 site/
+.venv-craibench/

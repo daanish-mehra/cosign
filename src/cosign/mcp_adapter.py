@@ -106,6 +106,10 @@ class StdioMCPClient:
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return self._request("tools/call", {"name": name, "arguments": arguments})
 
+    def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Any JSON-RPC method the server offers beyond tools (e.g. the CrAIBench bridge's)."""
+        return self._request(method, params or {})
+
     # --- plumbing ---------------------------------------------------------------------
     def _read(self) -> None:
         assert self.proc and self.proc.stdout

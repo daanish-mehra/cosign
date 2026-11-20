@@ -30,6 +30,7 @@ class Episode:
     error: str | None = None   # provider/API failure mid-episode; money already moved still counts
     trial: int = 0
     steps: list[dict] = field(default_factory=list)   # {tool, args, result, untrusted, blocked_reason}
+    notes: dict = field(default_factory=dict)          # suite-specific extras (e.g. CrAIBench's own verdict)
 
 
 @dataclass
@@ -49,6 +50,7 @@ class TestRun:
     trials: int = 1
     mutations: int = len(MUTATIONS)   # attacker rewrites tried per attack/task pair (adaptive techniques)
     techniques: str = "core"          # "core", "full", or the comma-separated ids that were run
+    skipped: list[str] = field(default_factory=list)   # cases that couldn't be set up (not scored)
     benign: list[Episode] = field(default_factory=list)
     pairs: list[PairResult] = field(default_factory=list)
     episodes: list[Episode] = field(default_factory=list)
